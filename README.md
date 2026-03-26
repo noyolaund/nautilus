@@ -1,0 +1,332 @@
+# 🧪 QA Automation Framework
+
+**AI-powered test automation framework** built for SAP Fiori, SAP WebGUI, and any web platform.  
+Uses **Stagehand** (LLM-based element identification) + **Playwright** (browser automation) with **Python**.
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   REST API (FastAPI)                 │
+│         POST /execute  ·  POST /execute/async        │
+└──────────────────┬──────────────────────────────────┘
+                   │ TestSuiteRequest (JSON)
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│              Engine Selector                         │
+│    ┌──────────────┐    ┌──────────────────────┐     │
+│    │ AI-Native    │    │ Hybrid               │     │
+│    │ (Impl. A)    │    │ (Impl. B)            │     │
+│    │              │    │                      │     │
+│    │ Stagehand    │    │ Playwright → Cache   │     │
+│    │ LLM for      │    │ → Stagehand fallback │     │
+│    │ every step   │    │                      │     │
+│    └──────────────┘    └──────────────────────┘     │
+└──────────────────┬──────────────────────────────────┘
+                   │ SuiteResult
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│  HTML Report Generator + JSON Structured Logs        │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Two Implementations
+
+### Implementation A — Stagehand AI-Native
+
+Every element interaction goes through the LLM. Stagehand "sees" the page and identifies elements by natural language description.
+
+| Aspect | Detail |
+|--------|--------|
+| **Strategy** | `act()` / `observe()` / `extract()` for every step |
+| **Best for** | SAP Fiori (dynamic IDs, Shadow DOM, deep nesting) |
+| **Resilience** | Maximum — self-healing when UI changes |
+| **Token cost** | Higher (~150-300 tokens per step) |
+| **Speed** | Slower (LLM inference per step) |
+| **Determinism** | Non-deterministic (LLM interpretation varies) |
+
+### Implementation B — Hybrid Playwright + Stagehand Fallback
+
+Deterministic Playwright selectors first. AI fallback only when selectors fail. Resolved selectors get cached for future runs.
+
+| Aspect | Detail |
+|--------|--------|
+| **Strategy** | CSS/XPath → Cache → SAP attributes → AI fallback |
+| **Best for** | Mixed platforms, CI/CD pipelines |
+| **Resilience** | High — degrades gracefully to AI |
+| **Token cost** | Low (AI only when needed) |
+| **Speed** | Fast when selectors work |
+| **Determinism** | Deterministic when selectors are stable |
+
+---
+
+## Project Structure
+
+```
+qa-framework/
+├── main.py                          # CLI entry point
+├── requirements.txt
+├── .env.example
+│
+├── models/
+│   └── schemas.py                   # Pydantic models (JSON schema)
+│
+├── engines/
+│   ├── base_engine.py               # Abstract base with retry/logging
+│   ├── stagehand_ai_engine.py       # Implementation A
+│   └── hybrid_playwright_engine.py  # Implementation B
+│
+├── api/
+│   └── service.py                   # FastAPI REST endpoints
+│
+├── reports/
+│   └── html_report.py               # HTML report generator
+│
+├── utils/
+│   └── logger.py                    # Structured logging + token tracker
+│
+├── config/
+│   └── selector_cache.json          # Auto-generated selector cache (Impl. B)
+│
+├── tests/
+│   └── test_cases/
+│       ├── example_sap_fiori.json   # SAP PO creation test
+│       └── example_generic_web.json # E-commerce checkout test
+│
+└── logs/                            # JSON logs + screenshots
+```
+
+---
+
+## Quick Start
+
+### 1. Install dependencies
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+# Edit .env with your API keys
+```
+
+### 3. Run via CLI
+
+```bash
+# Execute with Hybrid engine (recommended for mixed platforms)
+python main.py run tests/test_cases/example_sap_fiori.json --engine hybrid
+
+# Execute with AI-Native engine (recommended for SAP)
+python main.py run tests/test_cases/example_sap_fiori.json --engine ai_native
+```
+
+### 4. Run via REST API
+
+```bash
+# Start the server
+python main.py serve
+
+# Send a test suite (from another terminal)
+curl -X POST http://localhost:8000/execute \
+  -H "Content-Type: application/json" \
+  -d @tests/test_cases/example_sap_fiori.json \
+  -G --data-urlencode "engine_type=hybrid"
+
+# Async execution
+curl -X POST http://localhost:8000/execute/async \
+  -H "Content-Type: application/json" \
+  -d @tests/test_cases/example_sap_fiori.json
+
+# Check status
+curl http://localhost:8000/status/{run_id}
+
+# Download HTML report
+curl http://localhost:8000/report/{run_id} -o report.html
+```
+
+---
+
+## JSON Schema — Test Case Structure
+
+### Full TestSuiteRequest
+
+```json
+{
+  "suite_id": "SUITE-001",
+  "suite_name": "My Test Suite",
+  "environment": "staging",
+  "browser": "chromium",
+  "headless": true,
+  "llm_provider": "anthropic",
+  "llm_model": "claude-sonnet-4-20250514",
+  "parallel": false,
+  "test_cases": [ ... ]
+}
+```
+
+### TestCase
+
+```json
+{
+  "test_id": "TC-001",
+  "name": "Login flow",
+  "description": "Validate user can log in",
+  "tags": ["smoke", "login"],
+  "platform": "sap_fiori",
+  "base_url": "https://app.example.com",
+  "preconditions": "User account exists",
+  "steps": [ ... ],
+  "expected_result": "User sees dashboard",
+  "priority": "critical"
+}
+```
+
+### TestStep with variable data
+
+```json
+{
+  "step_id": "S001",
+  "name": "Enter username",
+  "action": "type",
+  "target": {
+    "description": "the username input field",
+    "selector": "#username",
+    "selector_strategy": "ai",
+    "iframe": null,
+    "shadow_host": null
+  },
+  "data": {
+    "value": "test_user@example.com",
+    "clear_before": true,
+    "sensitive": false
+  },
+  "timeout_ms": 15000,
+  "retry_count": 2,
+  "continue_on_failure": false,
+  "pre_wait_ms": 1000,
+  "screenshot_on_failure": true
+}
+```
+
+### Supported Actions
+
+| Action | Description | Requires Target | Requires Data |
+|--------|-------------|:---:|:---:|
+| `navigate` | Go to URL | No | Yes (URL) |
+| `click` | Click element | Yes | No |
+| `type` | Type text into field | Yes | Yes (text) |
+| `select` | Select dropdown option | Yes | Yes (option) |
+| `wait` | Wait for element visible | Yes | No |
+| `assert_visible` | Assert element is visible | Yes | No |
+| `assert_text` | Assert element contains text | Yes | Yes (expected) |
+| `assert_value` | Assert element value | Yes | Yes (expected) |
+| `extract` | Extract text from element | Yes | No |
+| `screenshot` | Capture page screenshot | No | No |
+| `custom` | Custom AI action | Yes | Optional |
+
+### Selector Strategies
+
+| Strategy | When to use |
+|----------|------------|
+| `ai` | **Default.** Stagehand resolves via LLM. Best for SAP. |
+| `css` | Stable CSS selectors (data-testid, classes) |
+| `xpath` | Complex DOM traversal |
+| `text` | Match by visible text |
+| `role` | ARIA role matching |
+| `data_attr` | Custom data attributes |
+| `ui5_stable` | SAP `data-ui5-stable` attribute |
+
+### Supported Platforms
+
+| Platform | Optimizations |
+|----------|--------------|
+| `sap_fiori` | 60s timeout, ui5-stable fallback, longer DOM settle |
+| `sap_webgui` | 45s timeout, frame handling |
+| `salesforce` | 45s timeout, Lightning components |
+| `dynamics_365` | 40s timeout |
+| `generic_web` | 30s timeout, standard Playwright |
+| `custom` | Configurable |
+
+---
+
+## HTML Report
+
+The report includes:
+
+- **Suite summary**: total tests, pass/fail counts, duration, pass rate
+- **LLM info**: provider, model, total tokens consumed
+- **Per-test cards** (expandable): all steps with status, timestamps, duration
+- **Step details**: action type, resolved selector, AI tokens used, error messages
+- **Screenshots**: linked for failed steps
+- **Dark mode**: automatically adapts to system preference
+
+---
+
+## Logging System
+
+### Console output (color-coded)
+
+```
+12:34:56 ▸ RUNNING [TC-001/S003] Click 'Save' button
+12:34:57 ● PASS   [TC-001/S003] Click 'Save' button  (342ms) [150 tokens]
+12:34:58 ✖ FAIL   [TC-001/S004] Assert text visible   (1200ms)
+         ↳ Element not found: success message
+```
+
+### JSON structured logs
+
+Each line in `logs/*.jsonl` is a complete JSON object:
+
+```json
+{
+  "timestamp": "2025-03-20T12:34:57Z",
+  "level": "INFO",
+  "logger": "qa.hybrid_playwright",
+  "message": "Click 'Save' button",
+  "test_id": "TC-001",
+  "step_id": "S003",
+  "status": "PASS",
+  "duration_ms": 342.5,
+  "tokens": 150,
+  "selector": "[data-ui5-stable='saveBtn']"
+}
+```
+
+---
+
+## Why SAP Needs AI-Powered Automation
+
+SAP UI5/Fiori presents unique challenges for traditional automation:
+
+1. **Dynamic IDs**: Generated at runtime (`__xmlview1--btn-42`), change between sessions
+2. **Shadow DOM**: UI5 Web Components encapsulate elements in shadow trees
+3. **Deep nesting**: 10+ levels of container divs typical
+4. **Async rendering**: UI5 render cycles don't align with standard DOM ready events
+5. **Class instability**: CSS classes change between UI5 releases
+6. **Generated markup**: Views compile to DOM at runtime, no static HTML
+
+Stagehand's LLM identification bypasses all of these by "seeing" the page like a human tester would — finding elements by their visual description rather than fragile DOM attributes.
+
+---
+
+## API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/execute` | POST | Synchronous suite execution |
+| `/execute/async` | POST | Queue suite for background execution |
+| `/status/{run_id}` | GET | Check async execution status |
+| `/report/{run_id}` | GET | Download HTML report |
+| `/schema/test-suite` | GET | JSON schema for TestSuiteRequest |
+| `/schema/test-case` | GET | JSON schema for TestCase |
+
+Interactive API docs available at `http://localhost:8000/docs` (Swagger UI).

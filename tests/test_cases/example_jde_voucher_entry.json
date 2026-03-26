@@ -1,0 +1,253 @@
+{
+  "suite_id": "SUITE-JDE-001",
+  "suite_name": "JDE E1 — Update Vendor Invoices from Excel",
+  "environment": "production",
+  "browser": "chromium",
+  "headless": false,
+  "llm_provider": "anthropic",
+  "llm_model": "claude-sonnet-4-20250514",
+  "parallel": false,
+
+  "_data_source": {
+    "source_id": "vendor_invoices",
+    "source_type": "excel_sharepoint",
+    "sharepoint": {
+      "site_url": "https://company.sharepoint.com/sites/FinanceTeam",
+      "file_path": "Shared Documents/Reports/Vendor_Invoices_March2026.xlsx",
+      "auth_method": "client_credentials",
+      "tenant_id": "{{env.SHAREPOINT_TENANT_ID}}",
+      "client_id": "{{env.SHAREPOINT_CLIENT_ID}}",
+      "client_secret": "{{env.SHAREPOINT_CLIENT_SECRET}}"
+    },
+    "excel": {
+      "sheets": [
+        {
+          "sheet_name": "Invoices",
+          "header_row": 1,
+          "data_start_row": 2,
+          "column_mappings": [
+            { "column": "A", "variable_name": "invoice_number", "data_type": "string", "required": true },
+            { "column": "B", "variable_name": "vendor_id", "data_type": "string", "required": true },
+            { "column": "C", "variable_name": "vendor_name", "data_type": "string", "required": false },
+            { "column": "D", "variable_name": "invoice_amount", "data_type": "number", "required": true },
+            { "column": "E", "variable_name": "invoice_date", "data_type": "date", "required": true, "date_format": "%m/%d/%Y" },
+            { "column": "F", "variable_name": "due_date", "data_type": "date", "required": true, "date_format": "%m/%d/%Y" },
+            { "column": "G", "variable_name": "gl_account", "data_type": "string", "required": true },
+            { "column": "H", "variable_name": "cost_center", "data_type": "string", "required": false, "default_value": "1000" },
+            { "column": "I", "variable_name": "description", "data_type": "string", "required": false }
+          ]
+        }
+      ]
+    },
+    "iteration": {
+      "mode": "all_rows",
+      "sheet_name": "Invoices",
+      "max_rows": 50
+    },
+    "cache_downloaded_file": true,
+    "cache_dir": "data_provider/cache"
+  },
+
+  "test_cases": [
+    {
+      "test_id": "TC-JDE-INV",
+      "name": "Enter Vendor Invoice {{data.invoice_number}} for {{data.vendor_name}}",
+      "description": "Enter invoice {{data.invoice_number}} ({{data.invoice_amount}}) into JDE Voucher Entry",
+      "tags": ["jde", "voucher_entry", "repetitive", "data_driven"],
+      "platform": "jde_e1",
+      "base_url": "https://jde.company.com/jde/E1Menu.maf",
+      "preconditions": "User has AP clerk role. Vendor {{data.vendor_id}} exists in address book.",
+      "priority": "high",
+      "steps": [
+        {
+          "step_id": "S001",
+          "name": "Navigate to JDE EnterpriseOne",
+          "action": "navigate",
+          "data": {
+            "value": "https://jde.company.com/jde/E1Menu.maf",
+            "clear_before": false,
+            "sensitive": false
+          },
+          "timeout_ms": 45000,
+          "retry_count": 2,
+          "pre_wait_ms": 3000
+        },
+        {
+          "step_id": "S002",
+          "name": "Open Voucher Entry application (P0411)",
+          "action": "click",
+          "target": {
+            "description": "the Fast Path or search field in the JDE menu, then type P0411 to open Voucher Entry",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000
+        },
+        {
+          "step_id": "S003",
+          "name": "Click Add button for new voucher",
+          "action": "click",
+          "target": {
+            "description": "the Add button on the Voucher Entry form toolbar",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 15000,
+          "pre_wait_ms": 2000
+        },
+        {
+          "step_id": "S004",
+          "name": "Enter Vendor/Supplier number",
+          "action": "type",
+          "target": {
+            "description": "the Address Number or Vendor Number field in the voucher header (Control ID typically 18 or labeled 'Address Number')",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "{{data.vendor_id}}",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000,
+          "retry_count": 1,
+          "pre_wait_ms": 1000
+        },
+        {
+          "step_id": "S005",
+          "name": "Enter Invoice Number",
+          "action": "type",
+          "target": {
+            "description": "the Invoice Number field in the voucher header",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "{{data.invoice_number}}",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000
+        },
+        {
+          "step_id": "S006",
+          "name": "Enter Invoice Date",
+          "action": "type",
+          "target": {
+            "description": "the Invoice Date field in the voucher header",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "{{data.invoice_date}}",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000
+        },
+        {
+          "step_id": "S007",
+          "name": "Enter Gross Amount",
+          "action": "type",
+          "target": {
+            "description": "the Gross Amount or Invoice Amount field in the voucher header",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "{{data.invoice_amount}}",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000,
+          "pre_wait_ms": 500
+        },
+        {
+          "step_id": "S008",
+          "name": "Enter GL Account in pay item grid",
+          "action": "type",
+          "target": {
+            "description": "the Account Number or GL Account field in the first row of the pay items grid",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "{{data.gl_account}}",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000,
+          "pre_wait_ms": 1000
+        },
+        {
+          "step_id": "S009",
+          "name": "Enter Cost Center/Business Unit",
+          "action": "type",
+          "target": {
+            "description": "the Business Unit or Cost Center field in the pay items grid row",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "{{data.cost_center}}",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000
+        },
+        {
+          "step_id": "S010",
+          "name": "Enter Description/Remark",
+          "action": "type",
+          "target": {
+            "description": "the Remark or Description field in the pay items grid row",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "{{data.description}}",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000,
+          "continue_on_failure": true
+        },
+        {
+          "step_id": "S011",
+          "name": "Click OK to save voucher",
+          "action": "click",
+          "target": {
+            "description": "the OK button to save and post the voucher entry",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 1000
+        },
+        {
+          "step_id": "S012",
+          "name": "Verify voucher saved — no error messages",
+          "action": "assert_visible",
+          "target": {
+            "description": "the Voucher Entry search form (indicating successful save and return to the list), with no error message banners visible",
+            "selector": null,
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 20000,
+          "screenshot_on_failure": true,
+          "pre_wait_ms": 3000
+        },
+        {
+          "step_id": "S013",
+          "name": "Screenshot confirmation for invoice {{data.invoice_number}}",
+          "action": "screenshot",
+          "timeout_ms": 5000
+        }
+      ],
+      "expected_result": "Voucher for invoice {{data.invoice_number}} is saved without errors in JDE"
+    }
+  ]
+}

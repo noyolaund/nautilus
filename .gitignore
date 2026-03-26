@@ -1,0 +1,30 @@
+# Environment
+.env
+.env.local
+.env.production
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Logs and reports (generated at runtime)
+logs/*.jsonl
+logs/screenshots/
+
+# IDE
+.vscode/
+.idea/
+context/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Selector cache (auto-generated)
+config/selector_cache.json

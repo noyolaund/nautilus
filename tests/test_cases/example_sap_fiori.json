@@ -1,0 +1,177 @@
+{
+  "suite_id": "SUITE-SAP-001",
+  "suite_name": "SAP Fiori Purchase Order Creation",
+  "environment": "staging",
+  "browser": "chromium",
+  "headless": true,
+  "llm_provider": "anthropic",
+  "llm_model": "claude-sonnet-4-20250514",
+  "parallel": false,
+  "test_cases": [
+    {
+      "test_id": "TC-SAP-001",
+      "name": "Create Purchase Order in SAP Fiori",
+      "description": "End-to-end test for PO creation via Fiori Launchpad",
+      "tags": ["smoke", "sap", "purchase_order"],
+      "platform": "sap_fiori",
+      "base_url": "https://your-sap-server.example.com/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html",
+      "preconditions": "SAP user account with MM01 authorization",
+      "steps": [
+        {
+          "step_id": "S001",
+          "name": "Navigate to SAP Fiori Launchpad",
+          "action": "navigate",
+          "data": {
+            "value": "https://your-sap-server.example.com/sap/bc/ui5_ui5/ui2/ushell/shells/abap/FioriLaunchpad.html"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S002",
+          "name": "Enter SAP username",
+          "action": "type",
+          "target": {
+            "description": "the username input field on the SAP login page",
+            "selector": "#USERNAME_FIELD-inner",
+            "selector_strategy": "css"
+          },
+          "data": {
+            "value": "TEST_USER",
+            "clear_before": true,
+            "sensitive": false
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S003",
+          "name": "Enter SAP password",
+          "action": "type",
+          "target": {
+            "description": "the password input field on the SAP login page",
+            "selector": "#PASSWORD_FIELD-inner",
+            "selector_strategy": "css"
+          },
+          "data": {
+            "value": "secure_password",
+            "clear_before": true,
+            "sensitive": true
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S004",
+          "name": "Click Log On button",
+          "action": "click",
+          "target": {
+            "description": "the Log On button to submit credentials",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S005",
+          "name": "Wait for Fiori Launchpad to load",
+          "action": "wait",
+          "target": {
+            "description": "the Fiori Launchpad home page with application tiles",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 60000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S006",
+          "name": "Open Create Purchase Order tile",
+          "action": "click",
+          "target": {
+            "description": "the Create Purchase Order tile on the Fiori Launchpad",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S007",
+          "name": "Enter Vendor number",
+          "action": "type",
+          "target": {
+            "description": "the Vendor input field in the purchase order header",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "1000001",
+            "clear_before": true
+          },
+          "timeout_ms": 20000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S008",
+          "name": "Enter Material in first line item",
+          "action": "type",
+          "target": {
+            "description": "the Material Number field in the first line item row",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "MAT-100",
+            "clear_before": true
+          },
+          "timeout_ms": 20000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S009",
+          "name": "Enter Quantity",
+          "action": "type",
+          "target": {
+            "description": "the Quantity field in the first line item row",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "10",
+            "clear_before": true
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S010",
+          "name": "Click Save button",
+          "action": "click",
+          "target": {
+            "description": "the Save button to submit the purchase order",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S011",
+          "name": "Verify success message",
+          "action": "assert_visible",
+          "target": {
+            "description": "a success message confirming the purchase order was created",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S012",
+          "name": "Take confirmation screenshot",
+          "action": "screenshot",
+          "timeout_ms": 10000,
+          "retry_count": 0
+        }
+      ],
+      "expected_result": "Purchase order is created and a success message with PO number is displayed",
+      "priority": "critical"
+    }
+  ]
+}

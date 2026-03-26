@@ -1,0 +1,93 @@
+{
+  "suite_id": "SUITE-WEB-001",
+  "suite_name": "E-Commerce Checkout Flow",
+  "environment": "staging",
+  "browser": "chromium",
+  "headless": true,
+  "llm_provider": "anthropic",
+  "llm_model": "claude-sonnet-4-20250514",
+  "parallel": false,
+  "test_cases": [
+    {
+      "test_id": "TC-WEB-001",
+      "name": "E-Commerce Checkout Flow",
+      "description": "Validate product search, add to cart, and checkout",
+      "tags": ["smoke", "checkout", "e2e"],
+      "platform": "generic_web",
+      "base_url": "https://ebay.com",
+      "preconditions": "Product catalog is seeded with test data",
+      "steps": [
+        {
+          "step_id": "S001",
+          "name": "Open home page",
+          "action": "navigate",
+          "data": {
+            "value": "https://ebay.com"
+          },
+          "timeout_ms": 15000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S002",
+          "name": "Search for product",
+          "action": "type",
+          "target": {
+            "description": "the search input field",
+            "selector": "input[type=search]",
+            "selector_strategy": "css"
+          },
+          "data": {
+            "value": "wireless keyboard",
+            "clear_before": true
+          },
+          "timeout_ms": 10000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S003",
+          "name": "Click first product",
+          "action": "click",
+          "target": {
+            "description": "the first product card in the search results",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S004",
+          "name": "Click Add to Cart",
+          "action": "click",
+          "target": {
+            "description": "the Add to Cart button",
+            "selector": "[data-testid=add-to-cart]",
+            "selector_strategy": "css"
+          },
+          "timeout_ms": 10000,
+          "retry_count": 2
+        },
+        {
+          "step_id": "S005",
+          "name": "Verify order confirmation",
+          "action": "assert_visible",
+          "target": {
+            "description": "order confirmation page showing Thank you or order number",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 15000,
+          "retry_count": 1,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S006",
+          "name": "Screenshot order confirmation",
+          "action": "screenshot",
+          "timeout_ms": 10000,
+          "retry_count": 0
+        }
+      ],
+      "expected_result": "Order confirmation page is displayed with order number",
+      "priority": "high"
+    }
+  ]
+}
