@@ -81,7 +81,7 @@ class Priority(str, Enum):
 # Platform-specific timeouts (ms)
 # ---------------------------------------------------------------------------
 
-PLATFORM_DEFAULTS: dict[Platform, dict[str, Any]] = {
+PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     Platform.SAP_FIORI: {"timeout_ms": 60_000, "settle_ms": 3000},
     Platform.SAP_WEBGUI: {"timeout_ms": 45_000, "settle_ms": 2000},
     Platform.JDE_E1: {"timeout_ms": 45_000, "settle_ms": 2000},
@@ -90,6 +90,18 @@ PLATFORM_DEFAULTS: dict[Platform, dict[str, Any]] = {
     Platform.GENERIC_WEB: {"timeout_ms": 30_000, "settle_ms": 1000},
     Platform.CUSTOM: {"timeout_ms": 30_000, "settle_ms": 1000},
 }
+# Fallback for any unrecognized platform name
+_DEFAULT_PLATFORM_CFG: dict[str, Any] = {"timeout_ms": 30_000, "settle_ms": 1000}
+
+
+def get_platform_config(platform: str | Platform) -> dict[str, Any]:
+    """Get platform config, falling back to defaults for custom platform names."""
+    key = platform.value if isinstance(platform, Platform) else platform
+    for k, v in PLATFORM_DEFAULTS.items():
+        check = k.value if isinstance(k, Platform) else k
+        if check == key:
+            return v
+    return _DEFAULT_PLATFORM_CFG
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +167,7 @@ class TestCase(BaseModel):
     name: str = Field(..., min_length=1, max_length=300)
     description: str = Field(default="", max_length=2000)
     tags: list[str] = Field(default_factory=list, max_length=20)
-    platform: Platform = Platform.GENERIC_WEB
+    platform: str = Field(default=Platform.GENERIC_WEB, max_length=50)
     base_url: str = Field(..., min_length=1, max_length=2000)
     preconditions: str = Field(default="", max_length=2000)
     steps: list[TestStep] = Field(..., min_length=1, max_length=200)
@@ -176,7 +188,7 @@ class TestSuiteRequest(BaseModel):
     environment: str = Field(default="staging", max_length=100)
     browser: str = Field(default="chromium", pattern=r"^(chromium|firefox|webkit)$")
     headless: bool = True
-    llm_provider: str = Field(default="anthropic", pattern=r"^(anthropic|openai)$")
+    llm_provider: str = Field(default="anthropic", max_length=50)
     llm_model: str = Field(default="claude-sonnet-4-20250514", max_length=100)
     parallel: bool = False
     test_cases: list[TestCase] = Field(..., min_length=1, max_length=100)
@@ -204,7 +216,7 @@ class TestResult(BaseModel):
     test_id: str
     name: str
     status: TestStatus
-    platform: Platform
+    platform: str
     steps: list[StepResult] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None

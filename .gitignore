@@ -16,6 +16,7 @@ venv/
 # Logs and reports (generated at runtime)
 logs/*.jsonl
 logs/screenshots/
+logs/
 
 # IDE
 .vscode/

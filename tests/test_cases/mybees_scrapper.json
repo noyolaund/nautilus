@@ -1,0 +1,170 @@
+{
+  "suite_id": "SUITE-JDE-RPT-001",
+  "suite_name": "MyBees Scrapper",
+  "environment": "production",
+  "browser": "chromium",
+  "headless": false,
+  "llm_provider": "deepseek",
+  "llm_model": "deepseek-chat",
+  "parallel": false,
+
+  "_data_source": {
+    "source_id": "report_versions",
+    "source_type": "excel_sharepoint",
+    "sharepoint": {
+      "site_url": "https://mybees.mx/",
+      "file_path": "Shared Documents/Report_Versions.xlsx",
+      "auth_method": "client_credentials",
+      "tenant_id": null,
+      "client_id": null,
+      "client_secret": null
+    },
+    "excel": {
+      "sheets": [
+        {
+          "sheet_name": "Reports",
+          "header_row": 1,
+          "data_start_row": 2,
+          "column_mappings": [
+            {
+              "column": "A",
+              "variable_name": "app_report",
+              "data_type": "string",
+              "required": true
+            },
+            {
+              "column": "B",
+              "variable_name": "current_version",
+              "data_type": "string",
+              "required": true
+            },
+            {
+              "column": "C",
+              "variable_name": "new_version",
+              "data_type": "string",
+              "required": true
+            },
+            {
+              "column": "D",
+              "variable_name": "object_name",
+              "data_type": "string",
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    "iteration": {
+      "mode": "all_rows",
+      "sheet_name": "Reports",
+      "max_rows": 100
+    },
+    "cache_downloaded_file": true,
+    "cache_dir": "data_provider/cache"
+  },
+
+  "test_cases": [
+    {
+      "test_id": "TC-JDE-CPY",
+      "name": "Getting offers from MyBees",
+      "description": "Validate that the scraper can navigate to MyBees, log in, and extract offer data based on the provided report versions",
+      "tags": ["jde", "report_version", "copy", "data_driven"],
+      "platform": "MyBees",
+      "base_url": "https://mybees.mx/",
+      "preconditions": "",
+      "priority": "high",
+      "steps": [
+        {
+          "step_id": "S001",
+          "name": "Navigate to mybees home page",
+          "action": "navigate",
+          "data": {
+            "value": "https://mybees.mx/",
+            "sensitive": false
+          },
+          "timeout_ms": 45000,
+          "retry_count": 2,
+          "pre_wait_ms": 0
+        },
+        {
+          "step_id": "S002",
+          "name": "Click the Ingresa button",
+          "action": "click",
+          "target": {
+            "description": "Click the Ingresa button on the home page",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S003",
+          "name": "Type the correo electrónico",
+          "action": "type",
+          "target": {
+            "description": "Fill the correo electrónico field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "noyolaund@gmail.com",
+            "sensitive": true
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2,
+          "pre_wait_ms": 3000
+        },
+        {
+          "step_id": "S004",
+          "name": "Type the password",
+          "action": "type",
+          "target": {
+            "description": "Fill the password field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "AmdsamIP75b",
+            "sensitive": true
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2,
+          "pre_wait_ms": 3000
+        },
+        {
+          "step_id": "S005",
+          "name": "Click Iniciar sesión button",
+          "action": "click",
+          "target": {
+            "description": "the 'Iniciar sesión' submit button on the login form",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2,
+          "pre_wait_ms": 3000
+        },
+        {
+          "step_id": "S006",
+          "name": "Click Ofertas button",
+          "action": "click",
+          "target": {
+            "description": "the 'Ofertas' button",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 15000,
+          "retry_count": 2,
+          "pre_wait_ms": 3000
+        },
+        {
+          "step_id": "S007",
+          "name": "Screenshot confirmation of successful login",
+          "action": "screenshot",
+          "timeout_ms": 5000,
+          "retry_count": 0,
+          "pre_wait_ms": 3000
+        }
+      ],
+      "expected_result": "User is successfully logged in and navigated to the dashboard or home page after login"
+    }
+  ]
+}

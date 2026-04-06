@@ -19,7 +19,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from models.schemas import (
     ActionType,
     EngineType,
-    PLATFORM_DEFAULTS,
+    get_platform_config,
     StepResult,
     StepStatus,
     SuiteResult,
@@ -40,14 +40,101 @@ class BaseEngine(ABC):
     def __init__(self, request: TestSuiteRequest) -> None:
         self.request = request
         self.token_tracker = TokenTracker()
+
+        # Build run folder: logs/MM-DD-YYYY_HH_MM_test_name/
+        base_log_dir = Path(os.getenv("LOG_DIR", "logs"))
+        ts = datetime.now().strftime("%m-%d-%Y_%H_%M")
+        safe_name = re.sub(r"[^\w\-]", "_", request.suite_name)[:60]
+        self._run_dir = base_log_dir / f"{ts}_{safe_name}"
+        self._run_dir.mkdir(parents=True, exist_ok=True)
+
         self._run_id = f"{request.suite_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.logger = get_logger(
             f"qa.{self.engine_type.value}",
-            log_dir=os.getenv("LOG_DIR", "logs"),
+            log_dir=str(self._run_dir),
             run_id=self._run_id,
         )
-        self._screenshot_dir = Path(os.getenv("LOG_DIR", "logs")) / "screenshots"
+        self._screenshot_dir = self._run_dir / "screenshots"
         self._screenshot_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Page context extraction for direct LLM calls
+    # ------------------------------------------------------------------
+
+    async def _get_page_context(self, page: Page, max_length: int = 6000) -> str:
+        """Extract a compact, LLM-friendly snapshot of interactive elements.
+
+        Optimized to keep token count low (~1000-1500 tokens) by:
+        - Only extracting visible elements in the viewport
+        - Dropping noisy CSS-in-JS class names (hashes, long utility classes)
+        - Limiting to 80 elements and short attribute values
+        - Skipping the accessibility tree (HTML is enough)
+        """
+        try:
+            html = await page.evaluate("""() => {
+                const sels = 'a, button, input, select, textarea, ' +
+                    '[role="button"], [role="link"], [role="tab"], [role="menuitem"], ' +
+                    '[data-testid], [type="submit"]';
+                const els = document.querySelectorAll(sels);
+                const result = [];
+                const seen = new Set();
+                for (const el of els) {
+                    if (result.length >= 80) break;
+                    // Skip hidden/off-screen elements
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) continue;
+                    const tag = el.tagName.toLowerCase();
+                    const text = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 50);
+                    const attrs = [];
+                    // High-value selector attrs only (skip class — too noisy)
+                    for (const a of ['id', 'href', 'type', 'name', 'placeholder',
+                                     'aria-label', 'data-testid', 'role']) {
+                        const v = el.getAttribute(a);
+                        if (v) attrs.push(a + '="' + v.slice(0, 50) + '"');
+                    }
+                    const line = '<' + tag + (attrs.length ? ' ' + attrs.join(' ') : '') + '>' + text + '</' + tag + '>';
+                    if (!seen.has(line)) {
+                        seen.add(line);
+                        result.push(line);
+                    }
+                }
+                return result.join('\\n');
+            }""")
+            if html:
+                if len(html) > max_length:
+                    html = html[:max_length] + "\n... (truncated)"
+                return html
+        except Exception:
+            pass
+
+        # Fallback: accessibility tree only
+        try:
+            snapshot = await page.accessibility.snapshot()  # type: ignore[union-attr]
+            if snapshot:
+                lines = self._flatten_a11y(snapshot, depth=0)
+                text = "\n".join(lines)
+                if len(text) > max_length:
+                    text = text[:max_length] + "\n... (truncated)"
+                return text
+        except Exception:
+            pass
+
+        return "(page context unavailable)"
+
+    def _flatten_a11y(self, node: dict, depth: int) -> list[str]:
+        """Recursively flatten an accessibility tree into indented lines."""
+        lines: list[str] = []
+        role = node.get("role", "")
+        name = node.get("name", "")
+        if role and role not in ("none", "generic", "GenericContainer"):
+            indent = "  " * depth
+            line = f"{indent}[{role}]"
+            if name:
+                line += f' "{name}"'
+            lines.append(line)
+        for child in node.get("children", []):
+            lines.extend(self._flatten_a11y(child, depth + 1))
+        return lines
 
     # ------------------------------------------------------------------
     # Abstract — each engine implements these
@@ -93,7 +180,10 @@ class BaseEngine(ABC):
         suite_end = datetime.now(timezone.utc)
         suite_result.finished_at = suite_end
         suite_result.total_duration_ms = (suite_end - suite_start).total_seconds() * 1000
-        suite_result.total_tokens = self.token_tracker.total
+        # Compute total tokens from actual test results (source of truth)
+        suite_result.total_tokens = sum(
+            tr.total_tokens for tr in suite_result.test_results
+        )
         return suite_result
 
     # ------------------------------------------------------------------
@@ -102,7 +192,7 @@ class BaseEngine(ABC):
 
     async def _run_test_case(self, browser: Browser, tc: TestCase) -> TestResult:
         test_start = datetime.now(timezone.utc)
-        platform_cfg = PLATFORM_DEFAULTS.get(tc.platform, {})
+        platform_cfg = get_platform_config(tc.platform)
         context: BrowserContext = await browser.new_context(
             viewport={"width": 1920, "height": 1080},
         )
@@ -140,6 +230,8 @@ class BaseEngine(ABC):
             await context.close()
 
         test_end = datetime.now(timezone.utc)
+        # Compute total tokens from step results (source of truth)
+        actual_tokens = sum(s.tokens_used for s in step_results)
         return TestResult(
             test_id=tc.test_id,
             name=tc.name,
@@ -149,7 +241,7 @@ class BaseEngine(ABC):
             started_at=test_start,
             finished_at=test_end,
             duration_ms=(test_end - test_start).total_seconds() * 1000,
-            total_tokens=test_tokens,
+            total_tokens=actual_tokens,
         )
 
     # ------------------------------------------------------------------
@@ -173,6 +265,12 @@ class BaseEngine(ABC):
 
             if step.pre_wait_ms > 0:
                 await asyncio.sleep(step.pre_wait_ms / 1000)
+
+            # Wait for all network activity to finish before acting
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass  # proceed even if timeout — page may use long-polling
 
             step_start = datetime.now(timezone.utc)
             try:
@@ -198,7 +296,7 @@ class BaseEngine(ABC):
                 step_id=step.step_id,
                 status=last_result.status.value.upper(),
                 duration_ms=last_result.duration_ms,
-                tokens=last_result.tokens_used or None,
+                tokens=last_result.tokens_used,
                 selector=last_result.resolved_selector,
                 error_message=last_result.error_message,
             )

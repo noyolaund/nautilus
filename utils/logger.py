@@ -140,8 +140,14 @@ class RichStepHandler(logging.Handler):
             text.append(f" {mask_sensitive(record.getMessage())}")
             if duration is not None:
                 text.append(f"  ({duration:.0f}ms)", style="dim")
-            if tokens:
-                text.append(f" [{tokens} tokens]", style="dim cyan")
+            selector = getattr(record, "selector", None)
+            if tokens is not None and status not in ("RUNNING", None):
+                if tokens > 0:
+                    text.append(f" [{tokens} tokens]", style="dim cyan")
+                elif selector and "cached" in str(selector):
+                    text.append(" [cached]", style="dim green")
+                else:
+                    text.append(" [0 tokens]", style="dim")
 
             _console.print(text)
 

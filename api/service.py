@@ -127,7 +127,7 @@ def create_app() -> FastAPI:
     ) -> dict:
         engine = _get_engine(suite, engine_type)
         result: SuiteResult = await engine.run()
-        report_path = generate_report(result)
+        report_path = generate_report(result, output_dir=str(engine._run_dir))
         return {
             "suite_id": result.suite_id,
             "status": "completed",
@@ -156,7 +156,7 @@ def create_app() -> FastAPI:
             try:
                 engine = _get_engine(suite, engine_type)
                 result = await engine.run()
-                report_path = generate_report(result)
+                report_path = generate_report(result, output_dir=str(engine._run_dir))
                 runs[run_id] = {
                     "status": "completed",
                     "result": result.model_dump(mode="json"),

@@ -52,7 +52,9 @@ def run(test_file: Path, engine: str, output: str):
     click.echo(f"Running suite '{suite_request.suite_name}' with {engine} engine...")
     result = asyncio.run(executor.run())
 
-    report_path = generate_report(result, output_dir=output)
+    # Save report in the engine's run folder (logs/MM-DD-YYYY_HH_MM_test_name/)
+    run_dir = str(executor._run_dir)
+    report_path = generate_report(result, output_dir=run_dir)
     click.echo()
     click.echo(f"Total: {result.total_tests}  |  "
                f"Passed: {result.passed}  |  "

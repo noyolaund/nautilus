@@ -392,7 +392,7 @@ function toggleTest(id) {
 # Public API
 # ---------------------------------------------------------------------------
 
-def generate_report(suite: SuiteResult, output_dir: str = ".") -> str:
+def generate_report(suite: SuiteResult, output_dir: str = ".", suite_name: str = "") -> str:
     """Render the HTML report and write it to *output_dir*.
 
     Returns the absolute path to the generated file.
@@ -407,9 +407,8 @@ def generate_report(suite: SuiteResult, output_dir: str = ".") -> str:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    safe_id = re.sub(r"[^\w\-.]", "_", suite.suite_id)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"report_{safe_id}_{ts}.html"
+    safe_name = re.sub(r"[^\w\-.]", "_", suite_name or suite.suite_name)[:60]
+    filename = f"report_{safe_name}.html"
     filepath = out / filename
 
     filepath.write_text(html, encoding="utf-8")
