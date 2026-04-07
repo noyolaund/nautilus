@@ -86,11 +86,16 @@ class BaseEngine(ABC):
                     const tag = el.tagName.toLowerCase();
                     const text = (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 50);
                     const attrs = [];
-                    // High-value selector attrs only (skip class — too noisy)
-                    for (const a of ['id', 'href', 'type', 'name', 'placeholder',
-                                     'aria-label', 'data-testid', 'role']) {
+                    for (const a of ['id', 'href', 'type', 'name', 'value', 'placeholder',
+                                     'aria-label', 'data-testid', 'role', 'title', 'alt',
+                                     'for', 'action']) {
                         const v = el.getAttribute(a);
                         if (v) attrs.push(a + '="' + v.slice(0, 50) + '"');
+                    }
+                    // Include class only if short and useful (skip CSS-in-JS hashes)
+                    const cls = el.getAttribute('class') || '';
+                    if (cls && cls.length < 60 && !/[_-]{2}|^[a-z]{1,3}-[a-zA-Z0-9]{6,}/.test(cls)) {
+                        attrs.push('class="' + cls.slice(0, 50) + '"');
                     }
                     const line = '<' + tag + (attrs.length ? ' ' + attrs.join(' ') : '') + '>' + text + '</' + tag + '>';
                     if (!seen.has(line)) {

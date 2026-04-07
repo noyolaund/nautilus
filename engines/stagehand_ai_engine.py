@@ -235,6 +235,15 @@ class StagehandAIEngine(BaseEngine):
                     return locator.first, matched
                 except (PwTimeout, Exception):
                     continue
+            # Try input[value="..."] (catches <input type="submit" value="Sign In">)
+            try:
+                locator = page.locator(f'input[value="{text}" i]')
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                matched = f'input[value="{text}"]'
+                self.logger.info("Input value fallback matched: %s", matched)
+                return locator.first, matched
+            except (PwTimeout, Exception):
+                pass
             # Try get_by_text
             try:
                 locator = page.get_by_text(text, exact=False)

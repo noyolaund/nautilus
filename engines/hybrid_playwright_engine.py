@@ -197,6 +197,17 @@ class HybridPlaywrightEngine(BaseEngine):
                         return locator.first, f"ai_resolved: {matched}", tokens
                     except PwTimeout:
                         continue
+                # Try input[value="..."]
+                try:
+                    locator = page.locator(f'input[value="{text}" i]')
+                    await locator.first.wait_for(state="visible", timeout=3000)
+                    matched = f'input[value="{text}"]'
+                    self.logger.info("Input value fallback matched: %s", matched)
+                    self._cache[cache_key] = matched
+                    self._save_cache()
+                    return locator.first, f"ai_resolved: {matched}", tokens
+                except PwTimeout:
+                    pass
                 try:
                     locator = page.get_by_text(text, exact=False)
                     await locator.first.wait_for(state="visible", timeout=5000)
