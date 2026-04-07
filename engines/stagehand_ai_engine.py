@@ -171,14 +171,20 @@ class StagehandAIEngine(BaseEngine):
     # ------------------------------------------------------------------
 
     async def _resolve_and_locate(
-        self, page: Page, result: dict[str, Any], timeout: int = 10000
+        self, page: Page, result: dict[str, Any], timeout: int = 10000,
+        original_desc: str = "",
     ):
         """Try each selector the LLM returned until one matches on the real page.
 
         Resolution order:
         1. CSS/Playwright selectors from the LLM response
-        2. Text-based fallback using element descriptions
+        2. get_by_label / get_by_placeholder (best for input fields)
+        3. get_by_role with name
+        4. input[value="..."] (for submit buttons)
+        5. get_by_text
         """
+        import re
+
         # Collect candidate selectors from the result
         selectors: list[str] = []
         descriptions: list[str] = []
@@ -211,31 +217,67 @@ class StagehandAIEngine(BaseEngine):
                 self.logger.info("Selector did not match: %s", selector)
                 continue
 
-        # 2. Text-based fallbacks — extract text from selectors like
-        #    button:has-text('X') or descriptions containing quoted text
+        # Build text candidates from multiple sources
         text_candidates: list[str] = []
-        import re
+
+        # From has-text() selectors
         for s in selectors:
             m = re.search(r"has-text\(['\"](.+?)['\"]\)", s)
             if m:
                 text_candidates.append(m.group(1))
+
+        # From quoted text in LLM descriptions
         for d in descriptions:
-            # Extract quoted text from descriptions
             for m in re.finditer(r"['\"]([^'\"]{2,})['\"]", d):
                 text_candidates.append(m.group(1))
 
-        for text in dict.fromkeys(text_candidates):  # dedupe preserving order
-            # Try get_by_role("button") + name
-            for role in ["button", "link", "menuitem"]:
+        # From original step description — extract key phrases
+        # Patterns: "the X field", "X input", "X button", "in the X field"
+        if original_desc:
+            for pattern in [
+                r"(?:the|in the)\s+['\"]?(.+?)['\"]?\s+(?:field|input|box|area|textbox)",
+                r"(?:the|in the)\s+['\"]?(.+?)['\"]?\s+(?:button|link|tab|menu)",
+                r"['\"]([^'\"]{2,})['\"]",
+            ]:
+                for m in re.finditer(pattern, original_desc, re.IGNORECASE):
+                    text_candidates.append(m.group(1).strip())
+
+        candidates = list(dict.fromkeys(text_candidates))  # dedupe
+        self.logger.info("Text candidates for fallback: %s", candidates)
+
+        for text in candidates:
+            # 2. get_by_label — best for input fields with associated <label>
+            try:
+                locator = page.get_by_label(text, exact=False)
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                matched = f'label="{text}"'
+                self.logger.info("Label fallback matched: %s", matched)
+                return locator.first, matched
+            except (PwTimeout, Exception):
+                pass
+
+            # 3. get_by_placeholder
+            try:
+                locator = page.get_by_placeholder(text, exact=False)
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                matched = f'placeholder="{text}"'
+                self.logger.info("Placeholder fallback matched: %s", matched)
+                return locator.first, matched
+            except (PwTimeout, Exception):
+                pass
+
+            # 4. get_by_role with name
+            for role in ["button", "link", "textbox", "menuitem"]:
                 try:
                     locator = page.get_by_role(role, name=text, exact=False)
-                    await locator.first.wait_for(state="visible", timeout=min(timeout, 5000))
+                    await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
                     matched = f'role={role}[name="{text}"]'
-                    self.logger.info("Text-role fallback matched: %s", matched)
+                    self.logger.info("Role fallback matched: %s", matched)
                     return locator.first, matched
                 except (PwTimeout, Exception):
                     continue
-            # Try input[value="..."] (catches <input type="submit" value="Sign In">)
+
+            # 5. input[value="..."]
             try:
                 locator = page.locator(f'input[value="{text}" i]')
                 await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
@@ -244,15 +286,16 @@ class StagehandAIEngine(BaseEngine):
                 return locator.first, matched
             except (PwTimeout, Exception):
                 pass
-            # Try get_by_text
+
+            # 6. get_by_text
             try:
                 locator = page.get_by_text(text, exact=False)
-                await locator.first.wait_for(state="visible", timeout=min(timeout, 5000))
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
                 matched = f'text="{text}"'
                 self.logger.info("Text fallback matched: %s", matched)
                 return locator.first, matched
             except (PwTimeout, Exception):
-                self.logger.info("Text fallback did not match: %s", text)
+                self.logger.info("No fallback matched for: %s", text)
                 continue
 
         return None, None
@@ -281,7 +324,8 @@ class StagehandAIEngine(BaseEngine):
                     result = await self._call_act(page, f"Click on {desc}")
                     tokens_used = result.get("tokens", 0)
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     if locator:
                         await locator.click()
@@ -299,7 +343,8 @@ class StagehandAIEngine(BaseEngine):
                     )
                     tokens_used = result.get("tokens", 0)
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     if locator:
                         if step.data.clear_before:  # type: ignore[union-attr]
@@ -318,7 +363,8 @@ class StagehandAIEngine(BaseEngine):
                     )
                     tokens_used = result.get("tokens", 0)
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     if locator:
                         await locator.select_option(label=option)
@@ -334,7 +380,8 @@ class StagehandAIEngine(BaseEngine):
                     )
                     tokens_used = result.get("tokens", 0)
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     resolved_selector = sel
 
@@ -345,7 +392,8 @@ class StagehandAIEngine(BaseEngine):
                     )
                     tokens_used = result.get("tokens", 0)
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     if locator:
                         resolved_selector = sel
@@ -359,7 +407,8 @@ class StagehandAIEngine(BaseEngine):
                     result = await self._call_observe(page, f"Find {desc}")
                     tokens_used = result.get("tokens", 0)
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     if locator:
                         actual = await locator.text_content() or ""
@@ -377,7 +426,8 @@ class StagehandAIEngine(BaseEngine):
                     result = await self._call_observe(page, f"Find {desc}")
                     tokens_used = result.get("tokens", 0)
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     if locator:
                         actual = await locator.input_value()
@@ -409,7 +459,8 @@ class StagehandAIEngine(BaseEngine):
                     tokens_used = result.get("tokens", 0)
                     # Try to resolve and act if a selector was returned
                     locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
                     )
                     if locator:
                         resolved_selector = sel

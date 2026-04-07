@@ -22,6 +22,7 @@ logs/
 .vscode/
 .idea/
 context/
+.vs/
 
 # OS
 .DS_Store
