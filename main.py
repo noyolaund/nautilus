@@ -97,5 +97,24 @@ def proxy(host: str, port: int | None):
     uvicorn.run("proxy.azure_proxy:proxy_app", host=host, port=bind_port, log_level="info")
 
 
+@cli.command(name="proxy-jnj")
+@click.option("--host", default="127.0.0.1", help="Bind host.")
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    help="Bind port (default: JNJ_PROXY_PORT env var or 3457).",
+)
+def proxy_jnj(host: str, port: int | None):
+    """Start the JNJ Azure OpenAI proxy server (Cloud PC)."""
+    import os
+    import uvicorn
+    bind_port = port or int(os.getenv("JNJ_PROXY_PORT", "3457"))
+    click.echo(f"Starting JNJ Azure proxy on {host}:{bind_port}")
+    click.echo(f"Engines should set STAGEHAND_SERVER_URL=http://{host}:{bind_port}")
+    click.echo(f"JNJ Proxy docs at http://{host}:{bind_port}/docs")
+    uvicorn.run("proxy.jnj_proxy:jnj_proxy_app", host=host, port=bind_port, log_level="info")
+
+
 if __name__ == "__main__":
     cli()
