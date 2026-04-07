@@ -193,8 +193,10 @@ class BaseEngine(ABC):
     async def _run_test_case(self, browser: Browser, tc: TestCase) -> TestResult:
         test_start = datetime.now(timezone.utc)
         platform_cfg = get_platform_config(tc.platform)
+        width = int(os.getenv("BROWSER_WIDTH", "1920"))
+        height = int(os.getenv("BROWSER_HEIGHT", "1080"))
         context: BrowserContext = await browser.new_context(
-            viewport={"width": 1920, "height": 1080},
+            viewport={"width": width, "height": height},
         )
         page: Page = await context.new_page()
         page.set_default_timeout(platform_cfg.get("timeout_ms", 30_000))
