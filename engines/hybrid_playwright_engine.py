@@ -158,20 +158,27 @@ class HybridPlaywrightEngine(BaseEngine):
             tokens = result.get("tokens", 0)
             elements = result.get("elements", [])
 
-            # 6a. Try CSS selectors from LLM
+            # 6a. Try all CSS selectors from LLM (both "selectors" array and "selector" single)
+            all_selectors: list[str] = []
             for el in elements:
-                ai_selector = el.get("selector", "")
-                if ai_selector:
-                    try:
-                        locator = page.locator(ai_selector)
-                        await locator.first.wait_for(state="visible", timeout=10000)
-                        self._cache[cache_key] = ai_selector
-                        self._save_cache()
-                        self.logger.info("AI selector matched: %s", ai_selector)
-                        return locator.first, f"ai_resolved: {ai_selector}", tokens
-                    except PwTimeout:
-                        self.logger.info("AI selector did not match: %s", ai_selector)
-                        continue
+                for s in el.get("selectors", []):
+                    if s and isinstance(s, str) and s not in all_selectors:
+                        all_selectors.append(s)
+                s = el.get("selector", "")
+                if s and s not in all_selectors:
+                    all_selectors.append(s)
+
+            for ai_selector in all_selectors:
+                try:
+                    locator = page.locator(ai_selector)
+                    await locator.first.wait_for(state="visible", timeout=10000)
+                    self._cache[cache_key] = ai_selector
+                    self._save_cache()
+                    self.logger.info("AI selector matched: %s", ai_selector)
+                    return locator.first, f"ai_resolved: {ai_selector}", tokens
+                except PwTimeout:
+                    self.logger.info("AI selector did not match: %s", ai_selector)
+                    continue
 
             # 6b. Text-based fallback — extract text from has-text() selectors
             import re

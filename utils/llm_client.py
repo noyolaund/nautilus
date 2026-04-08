@@ -288,11 +288,21 @@ SYSTEM_ACT = """You are a browser automation agent. You will receive the current
 Analyze the ACTUAL page content provided and find the REAL element that matches the instruction.
 
 Respond with a JSON object containing:
-- "selector": a valid CSS selector that matches the target element on THIS page. Use selectors based on actual attributes you see (id, class, href, data-testid, aria-label, text content). Prefer specific selectors: #id, [data-testid=x], a[href*=x], button with specific class.
+- "selectors": an array of 5+ different CSS selectors for the SAME target element, using every available attribute. Include ALL of these that apply:
+  - by id: "#myId"
+  - by name: "input[name='x']"
+  - by placeholder: "input[placeholder='x']"
+  - by value: "input[value='x']"
+  - by type+class: "input.className[type='text']"
+  - by data-testid: "[data-testid='x']"
+  - by aria-label: "[aria-label='x']"
+  - by href: "a[href*='x']"
+  - by role: "[role='button']"
+- "selector": the single BEST selector from the list above
 - "description": what the element is
 - "success": true if you found a matching element, false if not
 
-IMPORTANT: Only use selectors based on attributes you can actually see in the page content. Never guess. If you cannot find the element, set success to false.
+IMPORTANT: Only use selectors based on attributes you can actually see in the page content. Never guess. Return as many valid selectors as possible for the same element.
 Respond ONLY with valid JSON, no markdown fences."""
 
 SYSTEM_OBSERVE = """You are a browser automation agent. You will receive the current page structure (accessibility tree or interactive elements) followed by an instruction to find elements.
@@ -301,10 +311,11 @@ Analyze the ACTUAL page content provided and identify elements that match the in
 
 Respond with a JSON object containing:
 - "elements": array of objects, each with:
-  - "selector": a valid CSS selector based on REAL attributes from the page (id, class, href, data-testid, aria-label)
+  - "selectors": array of 5+ different CSS selectors for this element using every available attribute (id, name, placeholder, value, class, data-testid, aria-label, href, role, type)
+  - "selector": the single BEST selector
   - "description": what the element is
 
-IMPORTANT: Only return selectors based on attributes visible in the page content. Never invent selectors. If no elements match, return an empty array.
+IMPORTANT: Only return selectors based on attributes visible in the page content. Never invent selectors. Return as many valid selectors as possible per element. If no elements match, return an empty array.
 Respond ONLY with valid JSON, no markdown fences."""
 
 SYSTEM_EXTRACT = """You are a browser automation agent. You will receive the current page structure (accessibility tree or interactive elements) followed by an extraction instruction.

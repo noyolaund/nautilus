@@ -189,9 +189,12 @@ class StagehandAIEngine(BaseEngine):
         selectors: list[str] = []
         descriptions: list[str] = []
 
-        # From act() response
+        # From act() response — read both "selector" (single) and "selectors" (array)
+        for s in result.get("selectors", []):
+            if s and isinstance(s, str):
+                selectors.append(s)
         sel = result.get("selector", "")
-        if sel:
+        if sel and sel not in selectors:
             selectors.append(sel)
         desc = result.get("description", "")
         if desc:
@@ -199,8 +202,11 @@ class StagehandAIEngine(BaseEngine):
 
         # From observe() response
         for el in result.get("elements", []):
+            for s in el.get("selectors", []):
+                if s and isinstance(s, str) and s not in selectors:
+                    selectors.append(s)
             s = el.get("selector", "")
-            if s:
+            if s and s not in selectors:
                 selectors.append(s)
             d = el.get("description", "")
             if d:
