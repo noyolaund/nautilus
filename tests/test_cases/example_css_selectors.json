@@ -1,0 +1,90 @@
+{
+  "suite_id": "SUITE-CSS-001",
+  "suite_name": "CSS Selectors Demo",
+  "environment": "production",
+  "browser": "chromium",
+  "headless": false,
+  "llm_provider": "deepseek",
+  "llm_model": "deepseek-chat",
+  "parallel": false,
+  "test_cases": [
+    {
+      "test_id": "TC-CSS-001",
+      "name": "Wikipedia search using CSS selectors",
+      "description": "Navigate to Wikipedia, search using CSS selectors — zero LLM calls",
+      "tags": ["css", "selectors", "demo"],
+      "platform": "generic_web",
+      "base_url": "https://en.wikipedia.org",
+      "priority": "medium",
+      "steps": [
+        {
+          "step_id": "S001",
+          "name": "Navigate to Wikipedia",
+          "action": "navigate",
+          "data": { "value": "https://en.wikipedia.org" },
+          "timeout_ms": 15000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S002",
+          "name": "Type search query",
+          "action": "type",
+          "target": {
+            "description": "Wikipedia search box",
+            "selector": "input#searchInput",
+            "selector_strategy": "css"
+          },
+          "data": { "value": "Software testing", "clear_before": true },
+          "timeout_ms": 10000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S003",
+          "name": "Click search button",
+          "action": "click",
+          "target": {
+            "description": "Search button",
+            "selector": "button.pure-button",
+            "selector_strategy": "css"
+          },
+          "timeout_ms": 10000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S004",
+          "name": "Wait for article heading",
+          "action": "wait",
+          "target": {
+            "description": "Article title",
+            "selector": "h1#firstHeading",
+            "selector_strategy": "css"
+          },
+          "timeout_ms": 15000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S005",
+          "name": "Verify article content loaded",
+          "action": "assert_visible",
+          "target": {
+            "description": "Article body content",
+            "selector": "div#bodyContent",
+            "selector_strategy": "css"
+          },
+          "timeout_ms": 10000,
+          "retry_count": 1,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S006",
+          "name": "Screenshot article page",
+          "action": "screenshot",
+          "timeout_ms": 5000,
+          "retry_count": 0,
+          "pre_wait_ms": 1000
+        }
+      ],
+      "expected_result": "Wikipedia article for Software testing is displayed"
+    }
+  ]
+}

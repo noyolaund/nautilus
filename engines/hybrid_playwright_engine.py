@@ -105,10 +105,13 @@ class HybridPlaywrightEngine(BaseEngine):
         # 1. Explicit selector (CSS / XPath / data-attr / ui5-stable)
         if target.selector and target.selector_strategy != SelectorStrategy.AI:
             locator = self._get_locator(page, target.selector, target.selector_strategy)
+            self.logger.info("Trying explicit selector: %s (strategy: %s)", target.selector, target.selector_strategy)
             try:
                 await locator.first.wait_for(state="visible", timeout=5000)
+                self.logger.info("Explicit selector matched: %s", target.selector)
                 return locator.first, target.selector, 0
             except PwTimeout:
+                self.logger.warning("Explicit selector failed: %s", target.selector)
                 pass
 
         # 2. Cached selector
@@ -118,8 +121,10 @@ class HybridPlaywrightEngine(BaseEngine):
             try:
                 locator = page.locator(cached)
                 await locator.first.wait_for(state="visible", timeout=5000)
+                self.logger.info("Cached selector matched: %s", cached)
                 return locator.first, f"cached: {cached}", 0
             except PwTimeout:
+                self.logger.warning("Cached selector failed: %s", cached)
                 pass
 
         # 3. SAP-specific data-ui5-stable attribute

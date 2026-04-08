@@ -132,12 +132,26 @@ class RichStepHandler(logging.Handler):
             tokens = getattr(record, "tokens", None)
 
             ts = datetime.now().strftime("%H:%M:%S")
+            msg = mask_sensitive(record.getMessage())
             text = Text()
             text.append(f"{ts} ", style="dim")
+
+            # Resolution chain logs — format with 🔍 icon for visibility
+            if status is None and record.levelname == "INFO" and any(
+                kw in msg for kw in (
+                    "matched:", "did not match:", "fallback", "candidates",
+                    "Proxy", "Adjacent", "selector",
+                )
+            ):
+                text.append("🔍 FIND  ", style="bold magenta")
+                text.append(msg)
+                _console.print(text)
+                return
+
             text.append(f"{icon} {status or record.levelname:7s}", style=style)
             if test_id or step_id:
                 text.append(f" [{test_id}/{step_id}]", style="dim")
-            text.append(f" {mask_sensitive(record.getMessage())}")
+            text.append(f" {msg}")
             if duration is not None:
                 text.append(f"  ({duration:.0f}ms)", style="dim")
             selector = getattr(record, "selector", None)
