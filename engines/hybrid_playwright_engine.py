@@ -89,6 +89,31 @@ class HybridPlaywrightEngine(BaseEngine):
         return f"{test_id}::{step_id}"
 
     # ------------------------------------------------------------------
+    # Iframe resolution
+    # ------------------------------------------------------------------
+
+    async def _get_frame_context(self, page: Page, iframe_selector: Optional[str]):
+        """Return the FrameLocator context if iframe is specified, otherwise the page."""
+        if not iframe_selector:
+            return page
+        # Try each selector (comma-separated) until one matches
+        for sel in iframe_selector.split(","):
+            sel = sel.strip()
+            if not sel:
+                continue
+            try:
+                frame = page.frame_locator(sel)
+                # Verify the iframe exists by checking for any content
+                await frame.locator("body").wait_for(state="attached", timeout=5000)
+                self.logger.info("Iframe matched: %s", sel)
+                return frame
+            except Exception:
+                self.logger.info("Iframe not found: %s", sel)
+                continue
+        self.logger.warning("No iframe matched, falling back to main page")
+        return page
+
+    # ------------------------------------------------------------------
     # Element resolution chain
     # ------------------------------------------------------------------
 
@@ -102,10 +127,14 @@ class HybridPlaywrightEngine(BaseEngine):
 
         tokens = 0
 
+        # Resolve iframe context if specified
+        ctx = await self._get_frame_context(page, target.iframe)
+
         # 1. Explicit selector (CSS / XPath / data-attr / ui5-stable)
         if target.selector and target.selector_strategy != SelectorStrategy.AI:
-            locator = self._get_locator(page, target.selector, target.selector_strategy)
-            self.logger.info("Trying explicit selector: %s (strategy: %s)", target.selector, target.selector_strategy)
+            locator = self._get_locator(ctx, target.selector, target.selector_strategy)
+            iframe_note = f" (in iframe: {target.iframe})" if target.iframe else ""
+            self.logger.info("Trying explicit selector: %s (strategy: %s)%s", target.selector, target.selector_strategy, iframe_note)
             try:
                 await locator.first.wait_for(state="visible", timeout=5000)
                 self.logger.info("Explicit selector matched: %s", target.selector)
@@ -119,7 +148,7 @@ class HybridPlaywrightEngine(BaseEngine):
         cached = self._cache.get(cache_key)
         if cached:
             try:
-                locator = page.locator(cached)
+                locator = ctx.locator(cached)
                 await locator.first.wait_for(state="visible", timeout=5000)
                 self.logger.info("Cached selector matched: %s", cached)
                 return locator.first, f"cached: {cached}", 0
@@ -131,7 +160,7 @@ class HybridPlaywrightEngine(BaseEngine):
         if test_case.platform in (Platform.SAP_FIORI.value, Platform.SAP_WEBGUI.value, Platform.SAP_FIORI, Platform.SAP_WEBGUI) and target.selector:
             ui5_selector = f"[data-ui5-stable='{target.selector}']"
             try:
-                locator = page.locator(ui5_selector)
+                locator = ctx.locator(ui5_selector)
                 await locator.first.wait_for(state="visible", timeout=5000)
                 self._cache[cache_key] = ui5_selector
                 self._save_cache()
@@ -142,7 +171,7 @@ class HybridPlaywrightEngine(BaseEngine):
         # 4. Text-based matching
         if target.selector_strategy == SelectorStrategy.TEXT and target.selector:
             try:
-                locator = page.get_by_text(target.selector)
+                locator = ctx.get_by_text(target.selector)
                 await locator.first.wait_for(state="visible", timeout=5000)
                 return locator.first, f"text={target.selector}", 0
             except PwTimeout:
@@ -151,7 +180,7 @@ class HybridPlaywrightEngine(BaseEngine):
         # 5. Role-based matching
         if target.selector_strategy == SelectorStrategy.ROLE and target.selector:
             try:
-                locator = page.get_by_role(target.selector)  # type: ignore[arg-type]
+                locator = ctx.get_by_role(target.selector)  # type: ignore[arg-type]
                 await locator.first.wait_for(state="visible", timeout=5000)
                 return locator.first, f"role={target.selector}", 0
             except PwTimeout:
@@ -175,7 +204,7 @@ class HybridPlaywrightEngine(BaseEngine):
 
             for ai_selector in all_selectors:
                 try:
-                    locator = page.locator(ai_selector)
+                    locator = ctx.locator(ai_selector)
                     await locator.first.wait_for(state="visible", timeout=10000)
                     self._cache[cache_key] = ai_selector
                     self._save_cache()
@@ -200,7 +229,7 @@ class HybridPlaywrightEngine(BaseEngine):
             for text in dict.fromkeys(text_candidates):
                 for role in ["button", "link", "menuitem"]:
                     try:
-                        locator = page.get_by_role(role, name=text, exact=False)
+                        locator = ctx.get_by_role(role, name=text, exact=False)
                         await locator.first.wait_for(state="visible", timeout=5000)
                         matched = f'role={role}[name="{text}"]'
                         self.logger.info("Text-role fallback matched: %s", matched)
@@ -211,7 +240,7 @@ class HybridPlaywrightEngine(BaseEngine):
                         continue
                 # Try input[value="..."]
                 try:
-                    locator = page.locator(f'input[value="{text}" i]')
+                    locator = ctx.locator(f'input[value="{text}" i]')
                     await locator.first.wait_for(state="visible", timeout=3000)
                     matched = f'input[value="{text}"]'
                     self.logger.info("Input value fallback matched: %s", matched)
@@ -221,7 +250,7 @@ class HybridPlaywrightEngine(BaseEngine):
                 except PwTimeout:
                     pass
                 try:
-                    locator = page.get_by_text(text, exact=False)
+                    locator = ctx.get_by_text(text, exact=False)
                     await locator.first.wait_for(state="visible", timeout=5000)
                     matched = f'text="{text}"'
                     self.logger.info("Text fallback matched: %s", matched)
@@ -246,7 +275,36 @@ class HybridPlaywrightEngine(BaseEngine):
 
         for text in dict.fromkeys(label_texts):
             try:
-                selector = await page.evaluate("""(labelText) => {
+                # Run JS in the correct context (page or iframe)
+                if target.iframe and ctx != page:
+                    selector = await ctx.locator("body").evaluate("""(el, labelText) => {
+                        const doc = el.ownerDocument;""" + """
+                        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, null);
+                        while (walker.nextNode()) {
+                            const node = walker.currentNode;
+                            if (!node.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
+                            const parent = node.parentElement;
+                            if (!parent) continue;
+                            let sib = parent.nextElementSibling;
+                            while (sib) {
+                                const input = sib.matches('input,textarea,select') ? sib : sib.querySelector('input,textarea,select');
+                                if (input && input.offsetWidth > 0) {
+                                    return input.id ? '#' + input.id : (input.name ? input.tagName.toLowerCase() + '[name="' + input.name + '"]' : null);
+                                }
+                                sib = sib.nextElementSibling;
+                            }
+                            const td = parent.closest('td,th');
+                            if (td && td.nextElementSibling) {
+                                const input = td.nextElementSibling.querySelector('input,textarea,select');
+                                if (input && input.offsetWidth > 0) {
+                                    return input.id ? '#' + input.id : (input.name ? input.tagName.toLowerCase() + '[name="' + input.name + '"]' : null);
+                                }
+                            }
+                        }
+                        return null;
+                    }""", text)
+                else:
+                    selector = await page.evaluate("""(labelText) => {
                     const walker = document.createTreeWalker(
                         document.body, NodeFilter.SHOW_TEXT, null
                     );
@@ -281,7 +339,7 @@ class HybridPlaywrightEngine(BaseEngine):
                     return null;
                 }""", text)
                 if selector:
-                    locator = page.locator(selector)
+                    locator = ctx.locator(selector)
                     await locator.first.wait_for(state="visible", timeout=5000)
                     matched = f'adjacent-to:"{text}" → {selector}'
                     self.logger.info("Adjacent input fallback matched: %s", matched)
