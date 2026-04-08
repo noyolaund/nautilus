@@ -418,6 +418,19 @@ class HybridPlaywrightEngine(BaseEngine):
                         status = StepStatus.FAIL
                         error_message = f"Element not found: {step.target.description}"  # type: ignore[union-attr]
 
+                case ActionType.KEY_PRESS:
+                    key_combo = step.data.value  # type: ignore[union-attr]
+                    if step.target:
+                        locator, sel, tok = await self._resolve_element(page, step, test_case)
+                        tokens_used += tok
+                        resolved_selector = sel
+                        if locator:
+                            await locator.press(key_combo)
+                        else:
+                            await page.keyboard.press(key_combo)
+                    else:
+                        await page.keyboard.press(key_combo)
+
                 case ActionType.SCREENSHOT:
                     path = await self._take_screenshot(
                         page, test_case.test_id, step.step_id,

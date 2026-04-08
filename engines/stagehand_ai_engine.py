@@ -452,6 +452,27 @@ class StagehandAIEngine(BaseEngine):
                     )
                     tokens_used = result.get("tokens", 0)
 
+                case ActionType.KEY_PRESS:
+                    key_combo = step.data.value  # type: ignore[union-attr]
+                    if step.target:
+                        # Press key on a specific element
+                        desc = step.target.description
+                        result = await self._call_act(page, f"Find the element: {desc}")
+                        tokens_used = result.get("tokens", 0)
+                        locator, sel = await self._resolve_and_locate(
+                            page, result, timeout=step.timeout_ms,
+                            original_desc=desc,
+                        )
+                        if locator:
+                            await locator.press(key_combo)
+                            resolved_selector = sel
+                        else:
+                            # Fall back to page-level key press
+                            await page.keyboard.press(key_combo)
+                    else:
+                        # Global key press (no target element)
+                        await page.keyboard.press(key_combo)
+
                 case ActionType.SCREENSHOT:
                     path = await self._take_screenshot(
                         page, test_case.test_id, step.step_id,

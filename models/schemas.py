@@ -28,6 +28,7 @@ class ActionType(str, Enum):
     ASSERT_TEXT = "assert_text"
     ASSERT_VALUE = "assert_value"
     EXTRACT = "extract"
+    KEY_PRESS = "key_press"
     SCREENSHOT = "screenshot"
     CUSTOM = "custom"
 
@@ -154,6 +155,7 @@ class TestStep(BaseModel):
         actions_need_data = {
             ActionType.NAVIGATE, ActionType.TYPE, ActionType.SELECT,
             ActionType.ASSERT_TEXT, ActionType.ASSERT_VALUE,
+            ActionType.KEY_PRESS,
         }
         if self.action in actions_need_target and self.target is None:
             raise ValueError(f"Action '{self.action.value}' requires a target")
