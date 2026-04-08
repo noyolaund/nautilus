@@ -226,6 +226,69 @@ class HybridPlaywrightEngine(BaseEngine):
         except Exception:
             pass
 
+        # 7. Adjacent input fallback — find input next to label text
+        label_texts = [target.description]
+        try:
+            import re as _re
+            for pattern in [
+                r"(?:the|in the)\s+['\"]?(.+?)['\"]?\s+(?:field|input|box|area)",
+                r"['\"]([^'\"]{2,})['\"]",
+            ]:
+                for m in _re.finditer(pattern, target.description, _re.IGNORECASE):
+                    label_texts.append(m.group(1).strip())
+        except Exception:
+            pass
+
+        for text in dict.fromkeys(label_texts):
+            try:
+                selector = await page.evaluate("""(labelText) => {
+                    const walker = document.createTreeWalker(
+                        document.body, NodeFilter.SHOW_TEXT, null
+                    );
+                    while (walker.nextNode()) {
+                        const node = walker.currentNode;
+                        if (!node.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
+                        const parent = node.parentElement;
+                        if (!parent) continue;
+                        let el = parent.nextElementSibling;
+                        while (el) {
+                            const input = (el.matches('input,textarea,select'))
+                                ? el : el.querySelector('input,textarea,select');
+                            if (input && input.offsetWidth > 0) {
+                                const id = input.id ? '#' + input.id : '';
+                                const name = input.name ? '[name="' + input.name + '"]' : '';
+                                const tag = input.tagName.toLowerCase();
+                                return id || (tag + name) || null;
+                            }
+                            el = el.nextElementSibling;
+                        }
+                        const td = parent.closest('td,th');
+                        if (td && td.nextElementSibling) {
+                            const input = td.nextElementSibling.querySelector('input,textarea,select');
+                            if (input && input.offsetWidth > 0) {
+                                const id = input.id ? '#' + input.id : '';
+                                const name = input.name ? '[name="' + input.name + '"]' : '';
+                                const tag = input.tagName.toLowerCase();
+                                return id || (tag + name) || null;
+                            }
+                        }
+                    }
+                    return null;
+                }""", text)
+                if selector:
+                    locator = page.locator(selector)
+                    await locator.first.wait_for(state="visible", timeout=5000)
+                    matched = f'adjacent-to:"{text}" → {selector}'
+                    self.logger.info("Adjacent input fallback matched: %s", matched)
+                    self._cache[cache_key] = selector
+                    self._save_cache()
+                    return locator.first, f"ai_resolved: {matched}", tokens
+            except PwTimeout:
+                self.logger.info("Adjacent input fallback did not match for: %s", text)
+                continue
+            except Exception:
+                pass
+
         return None, None, tokens
 
     def _get_locator(self, page: Page, selector: str, strategy: SelectorStrategy) -> Locator:

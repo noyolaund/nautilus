@@ -304,6 +304,73 @@ class StagehandAIEngine(BaseEngine):
                 self.logger.info("No fallback matched for: %s", text)
                 continue
 
+        # 7. Adjacent input fallback — find the input/textarea next to a label text
+        #    Handles enterprise UIs (SAP, JDE) where label and input are siblings
+        all_texts = candidates + ([original_desc] if original_desc else [])
+        for text in dict.fromkeys(all_texts):
+            try:
+                selector = await page.evaluate("""(labelText) => {
+                    // Find all elements containing the label text
+                    const walker = document.createTreeWalker(
+                        document.body, NodeFilter.SHOW_TEXT, null
+                    );
+                    while (walker.nextNode()) {
+                        const node = walker.currentNode;
+                        if (!node.textContent.toLowerCase().includes(labelText.toLowerCase())) continue;
+                        const parent = node.parentElement;
+                        if (!parent) continue;
+
+                        // Strategy 1: next sibling input
+                        let el = parent.nextElementSibling;
+                        while (el) {
+                            const input = (el.matches('input,textarea,select'))
+                                ? el : el.querySelector('input,textarea,select');
+                            if (input && input.offsetWidth > 0) {
+                                const id = input.id ? '#' + input.id : '';
+                                const name = input.name ? '[name="' + input.name + '"]' : '';
+                                const tag = input.tagName.toLowerCase();
+                                return id || (tag + name) || null;
+                            }
+                            el = el.nextElementSibling;
+                        }
+
+                        // Strategy 2: parent's next sibling
+                        let pEl = parent.parentElement?.nextElementSibling;
+                        if (pEl) {
+                            const input = (pEl.matches('input,textarea,select'))
+                                ? pEl : pEl.querySelector('input,textarea,select');
+                            if (input && input.offsetWidth > 0) {
+                                const id = input.id ? '#' + input.id : '';
+                                const name = input.name ? '[name="' + input.name + '"]' : '';
+                                const tag = input.tagName.toLowerCase();
+                                return id || (tag + name) || null;
+                            }
+                        }
+
+                        // Strategy 3: same row (table cell pattern: <td>Label</td><td><input></td>)
+                        const td = parent.closest('td,th');
+                        if (td && td.nextElementSibling) {
+                            const input = td.nextElementSibling.querySelector('input,textarea,select');
+                            if (input && input.offsetWidth > 0) {
+                                const id = input.id ? '#' + input.id : '';
+                                const name = input.name ? '[name="' + input.name + '"]' : '';
+                                const tag = input.tagName.toLowerCase();
+                                return id || (tag + name) || null;
+                            }
+                        }
+                    }
+                    return null;
+                }""", text)
+                if selector:
+                    locator = page.locator(selector)
+                    await locator.first.wait_for(state="visible", timeout=min(timeout, 5000))
+                    matched = f'adjacent-to:"{text}" → {selector}'
+                    self.logger.info("Adjacent input fallback matched: %s", matched)
+                    return locator.first, matched
+            except (PwTimeout, Exception):
+                self.logger.info("Adjacent input fallback did not match for: %s", text)
+                continue
+
         return None, None
 
     # ------------------------------------------------------------------
