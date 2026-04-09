@@ -32,6 +32,41 @@ from models.schemas import (
 from utils.logger import TokenTracker, get_logger, step_log
 
 
+# Map common shorthand key names to Playwright's expected names
+_KEY_ALIASES: dict[str, str] = {
+    "ctrl": "Control",
+    "cmd": "Meta",
+    "command": "Meta",
+    "win": "Meta",
+    "windows": "Meta",
+    "alt": "Alt",
+    "shift": "Shift",
+    "enter": "Enter",
+    "return": "Enter",
+    "esc": "Escape",
+    "del": "Delete",
+    "bs": "Backspace",
+    "space": " ",
+    "up": "ArrowUp",
+    "down": "ArrowDown",
+    "left": "ArrowLeft",
+    "right": "ArrowRight",
+    "pageup": "PageUp",
+    "pagedown": "PageDown",
+    "home": "Home",
+    "end": "End",
+    "insert": "Insert",
+    "tab": "Tab",
+}
+
+
+def normalize_key_combo(combo: str) -> str:
+    """Normalize a key combo like 'Ctrl+Alt+I' to 'Control+Alt+I'."""
+    parts = combo.split("+")
+    normalized = [_KEY_ALIASES.get(p.strip().lower(), p.strip()) for p in parts]
+    return "+".join(normalized)
+
+
 class BaseEngine(ABC):
     """Base class for test execution engines."""
 
@@ -275,7 +310,7 @@ class BaseEngine(ABC):
 
             # Wait for all network activity to finish before acting
             try:
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                await page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
                 pass  # proceed even if timeout — page may use long-polling
 

@@ -104,7 +104,7 @@ class HybridPlaywrightEngine(BaseEngine):
             try:
                 frame = page.frame_locator(sel)
                 # Verify the iframe exists by checking for any content
-                await frame.locator("body").wait_for(state="attached", timeout=5000)
+                await frame.locator("body").wait_for(state="attached", timeout=2000)
                 self.logger.info("Iframe matched: %s", sel)
                 return frame
             except Exception:
@@ -136,7 +136,7 @@ class HybridPlaywrightEngine(BaseEngine):
             iframe_note = f" (in iframe: {target.iframe})" if target.iframe else ""
             self.logger.info("Trying explicit selector: %s (strategy: %s)%s", target.selector, target.selector_strategy, iframe_note)
             try:
-                await locator.first.wait_for(state="visible", timeout=5000)
+                await locator.first.wait_for(state="visible", timeout=2000)
                 self.logger.info("Explicit selector matched: %s", target.selector)
                 return locator.first, target.selector, 0
             except PwTimeout:
@@ -149,7 +149,7 @@ class HybridPlaywrightEngine(BaseEngine):
         if cached:
             try:
                 locator = ctx.locator(cached)
-                await locator.first.wait_for(state="visible", timeout=5000)
+                await locator.first.wait_for(state="visible", timeout=2000)
                 self.logger.info("Cached selector matched: %s", cached)
                 return locator.first, f"cached: {cached}", 0
             except PwTimeout:
@@ -161,7 +161,7 @@ class HybridPlaywrightEngine(BaseEngine):
             ui5_selector = f"[data-ui5-stable='{target.selector}']"
             try:
                 locator = ctx.locator(ui5_selector)
-                await locator.first.wait_for(state="visible", timeout=5000)
+                await locator.first.wait_for(state="visible", timeout=2000)
                 self._cache[cache_key] = ui5_selector
                 self._save_cache()
                 return locator.first, ui5_selector, 0
@@ -172,7 +172,7 @@ class HybridPlaywrightEngine(BaseEngine):
         if target.selector_strategy == SelectorStrategy.TEXT and target.selector:
             try:
                 locator = ctx.get_by_text(target.selector)
-                await locator.first.wait_for(state="visible", timeout=5000)
+                await locator.first.wait_for(state="visible", timeout=2000)
                 return locator.first, f"text={target.selector}", 0
             except PwTimeout:
                 pass
@@ -181,7 +181,7 @@ class HybridPlaywrightEngine(BaseEngine):
         if target.selector_strategy == SelectorStrategy.ROLE and target.selector:
             try:
                 locator = ctx.get_by_role(target.selector)  # type: ignore[arg-type]
-                await locator.first.wait_for(state="visible", timeout=5000)
+                await locator.first.wait_for(state="visible", timeout=2000)
                 return locator.first, f"role={target.selector}", 0
             except PwTimeout:
                 pass
@@ -205,7 +205,7 @@ class HybridPlaywrightEngine(BaseEngine):
             for ai_selector in all_selectors:
                 try:
                     locator = ctx.locator(ai_selector)
-                    await locator.first.wait_for(state="visible", timeout=10000)
+                    await locator.first.wait_for(state="visible", timeout=2000)
                     self._cache[cache_key] = ai_selector
                     self._save_cache()
                     self.logger.info("AI selector matched: %s", ai_selector)
@@ -230,7 +230,7 @@ class HybridPlaywrightEngine(BaseEngine):
                 for role in ["button", "link", "menuitem"]:
                     try:
                         locator = ctx.get_by_role(role, name=text, exact=False)
-                        await locator.first.wait_for(state="visible", timeout=5000)
+                        await locator.first.wait_for(state="visible", timeout=2000)
                         matched = f'role={role}[name="{text}"]'
                         self.logger.info("Text-role fallback matched: %s", matched)
                         self._cache[cache_key] = matched
@@ -241,7 +241,7 @@ class HybridPlaywrightEngine(BaseEngine):
                 # Try input[value="..."]
                 try:
                     locator = ctx.locator(f'input[value="{text}" i]')
-                    await locator.first.wait_for(state="visible", timeout=3000)
+                    await locator.first.wait_for(state="visible", timeout=2000)
                     matched = f'input[value="{text}"]'
                     self.logger.info("Input value fallback matched: %s", matched)
                     self._cache[cache_key] = matched
@@ -251,7 +251,7 @@ class HybridPlaywrightEngine(BaseEngine):
                     pass
                 try:
                     locator = ctx.get_by_text(text, exact=False)
-                    await locator.first.wait_for(state="visible", timeout=5000)
+                    await locator.first.wait_for(state="visible", timeout=2000)
                     matched = f'text="{text}"'
                     self.logger.info("Text fallback matched: %s", matched)
                     return locator.first, f"ai_resolved: {matched}", tokens
@@ -340,7 +340,7 @@ class HybridPlaywrightEngine(BaseEngine):
                 }""", text)
                 if selector:
                     locator = ctx.locator(selector)
-                    await locator.first.wait_for(state="visible", timeout=5000)
+                    await locator.first.wait_for(state="visible", timeout=2000)
                     matched = f'adjacent-to:"{text}" → {selector}'
                     self.logger.info("Adjacent input fallback matched: %s", matched)
                     self._cache[cache_key] = selector
@@ -545,7 +545,8 @@ class HybridPlaywrightEngine(BaseEngine):
                         error_message = f"Element not found: {step.target.description}"  # type: ignore[union-attr]
 
                 case ActionType.KEY_PRESS:
-                    key_combo = step.data.value  # type: ignore[union-attr]
+                    from engines.base_engine import normalize_key_combo
+                    key_combo = normalize_key_combo(step.data.value)  # type: ignore[union-attr]
                     if step.target:
                         locator, sel, tok = await self._resolve_element(page, step, test_case)
                         tokens_used += tok

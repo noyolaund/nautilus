@@ -216,7 +216,7 @@ class StagehandAIEngine(BaseEngine):
         for selector in selectors:
             try:
                 locator = page.locator(selector)
-                await locator.first.wait_for(state="visible", timeout=min(timeout, 5000))
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 2000))
                 self.logger.info("Selector matched: %s", selector)
                 return locator.first, selector
             except (PwTimeout, Exception):
@@ -255,7 +255,7 @@ class StagehandAIEngine(BaseEngine):
             # 2. get_by_label — best for input fields with associated <label>
             try:
                 locator = page.get_by_label(text, exact=False)
-                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 2000))
                 matched = f'label="{text}"'
                 self.logger.info("Label fallback matched: %s", matched)
                 return locator.first, matched
@@ -265,7 +265,7 @@ class StagehandAIEngine(BaseEngine):
             # 3. get_by_placeholder
             try:
                 locator = page.get_by_placeholder(text, exact=False)
-                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 2000))
                 matched = f'placeholder="{text}"'
                 self.logger.info("Placeholder fallback matched: %s", matched)
                 return locator.first, matched
@@ -276,7 +276,7 @@ class StagehandAIEngine(BaseEngine):
             for role in ["button", "link", "textbox", "menuitem"]:
                 try:
                     locator = page.get_by_role(role, name=text, exact=False)
-                    await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                    await locator.first.wait_for(state="visible", timeout=min(timeout, 2000))
                     matched = f'role={role}[name="{text}"]'
                     self.logger.info("Role fallback matched: %s", matched)
                     return locator.first, matched
@@ -286,7 +286,7 @@ class StagehandAIEngine(BaseEngine):
             # 5. input[value="..."]
             try:
                 locator = page.locator(f'input[value="{text}" i]')
-                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 2000))
                 matched = f'input[value="{text}"]'
                 self.logger.info("Input value fallback matched: %s", matched)
                 return locator.first, matched
@@ -296,7 +296,7 @@ class StagehandAIEngine(BaseEngine):
             # 6. get_by_text
             try:
                 locator = page.get_by_text(text, exact=False)
-                await locator.first.wait_for(state="visible", timeout=min(timeout, 3000))
+                await locator.first.wait_for(state="visible", timeout=min(timeout, 2000))
                 matched = f'text="{text}"'
                 self.logger.info("Text fallback matched: %s", matched)
                 return locator.first, matched
@@ -363,7 +363,7 @@ class StagehandAIEngine(BaseEngine):
                 }""", text)
                 if selector:
                     locator = page.locator(selector)
-                    await locator.first.wait_for(state="visible", timeout=min(timeout, 5000))
+                    await locator.first.wait_for(state="visible", timeout=min(timeout, 2000))
                     matched = f'adjacent-to:"{text}" → {selector}'
                     self.logger.info("Adjacent input fallback matched: %s", matched)
                     return locator.first, matched
@@ -520,7 +520,8 @@ class StagehandAIEngine(BaseEngine):
                     tokens_used = result.get("tokens", 0)
 
                 case ActionType.KEY_PRESS:
-                    key_combo = step.data.value  # type: ignore[union-attr]
+                    from engines.base_engine import normalize_key_combo
+                    key_combo = normalize_key_combo(step.data.value)  # type: ignore[union-attr]
                     if step.target:
                         # Press key on a specific element
                         desc = step.target.description
