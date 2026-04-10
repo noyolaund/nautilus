@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JDE Automation Dashboard</title>
+<style>
+:root {
+    --bg: #fafaf8; --card: #fff; --border: #e5e4df; --text: #2c2c2a;
+    --muted: #73726c; --pass: #1d9e75; --pass-bg: #e1f5ee;
+    --fail: #e24b4a; --fail-bg: #fcebeb; --accent: #534ab7; --accent-bg: #eeedfe;
+    --mono: 'SF Mono','Fira Code',monospace;
+}
+@media(prefers-color-scheme:dark){:root{
+    --bg:#1a1a1a;--card:#242424;--border:#3a3a38;--text:#e0ddd5;--muted:#9c9a92;
+    --pass-bg:#0a2e20;--fail-bg:#2e1212;--accent-bg:#1e1d30;
+}}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:2rem;max-width:1100px;margin:0 auto}
+h1{font-size:1.4rem;font-weight:600;margin-bottom:.5rem}
+.subtitle{color:var(--muted);font-size:.85rem;margin-bottom:2rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:1.5rem;margin-bottom:1rem}
+.card h2{font-size:1rem;font-weight:600;margin-bottom:1rem;display:flex;align-items:center;gap:8px}
+.step-num{background:var(--accent);color:#fff;width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700}
+.row{display:flex;gap:12px;align-items:flex-end}
+.input-group{flex:1}
+.input-group label{display:block;font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+.input-group input{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:.85rem;background:var(--bg);color:var(--text)}
+button{padding:8px 20px;border:none;border-radius:6px;font-size:.85rem;font-weight:500;cursor:pointer;transition:opacity .15s}
+button:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-success{background:var(--pass);color:#fff}
+.btn-danger{background:var(--fail);color:#fff}
+.btn-secondary{background:var(--border);color:var(--text)}
+.status{padding:6px 12px;border-radius:6px;font-size:.8rem;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.status-ok{background:var(--pass-bg);color:var(--pass)}
+.status-err{background:var(--fail-bg);color:var(--fail)}
+.status-wait{background:var(--accent-bg);color:var(--accent)}
+.status-idle{background:var(--bg);color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:1rem}
+th{text-align:left;padding:6px 10px;background:var(--bg);color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.04em}
+td{padding:6px 10px;border-top:1px solid var(--border)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:500}
+.badge-pass{background:var(--pass-bg);color:var(--pass)}
+.badge-fail{background:var(--fail-bg);color:var(--fail)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:1rem 0}
+.metric{background:var(--bg);border-radius:8px;padding:.75rem 1rem;text-align:center}
+.metric-val{font-size:1.3rem;font-weight:600}
+.metric-label{font-size:.7rem;color:var(--muted);text-transform:uppercase}
+.log-area{background:#1a1a1a;color:#e0ddd5;font-family:var(--mono);font-size:.75rem;padding:12px;border-radius:6px;max-height:300px;overflow-y:auto;white-space:pre-wrap;margin-top:1rem}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hidden{display:none}
+</style>
+</head>
+<body>
+
+<h1>JDE Automation Dashboard</h1>
+<div class="subtitle">Report Version Copy — Login once, iterate many</div>
+
+<!-- Status Bar -->
+<div class="card" style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
+    <span id="st-browser" class="status status-idle">Browser: Off</span>
+    <span id="st-login" class="status status-idle">Login: Pending</span>
+    <span id="st-data" class="status status-idle">Data: Not loaded</span>
+    <span id="st-exec" class="status status-idle">Execution: Idle</span>
+</div>
+
+<!-- Step 1: Start Browser & Login -->
+<div class="card">
+    <h2><span class="step-num">1</span> Start Browser & Login</h2>
+    <div class="row">
+        <div class="input-group">
+            <label>Test Suite JSON Path</label>
+            <input type="text" id="suite-path" value="tests/test_cases/jde_copy_report_version.json" placeholder="path/to/suite.json">
+        </div>
+        <button class="btn-primary" id="btn-start" onclick="startAndLogin()">Start Browser & Login</button>
+        <button class="btn-danger" id="btn-stop" onclick="stopBrowser()" disabled>Stop Browser</button>
+    </div>
+    <div id="login-log" class="log-area hidden"></div>
+</div>
+
+<!-- Step 2: Load Excel Data -->
+<div class="card">
+    <h2><span class="step-num">2</span> Load Excel Data</h2>
+    <div class="row">
+        <div class="input-group">
+            <label>Excel File Path (local or downloaded from SharePoint)</label>
+            <input type="text" id="excel-path" placeholder="C:\path\to\Report_Versions.xlsx">
+        </div>
+        <button class="btn-primary" id="btn-load" onclick="loadData()" disabled>Load & Preview</button>
+    </div>
+    <div id="data-preview" class="hidden">
+        <div id="data-info" style="margin-top:1rem;font-size:.85rem"></div>
+        <div style="overflow-x:auto">
+            <table id="data-table"><thead></thead><tbody></tbody></table>
+        </div>
+    </div>
+</div>
+
+<!-- Step 3: Execute -->
+<div class="card">
+    <h2><span class="step-num">3</span> Execute Iterations</h2>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">
+        Each row from the Excel will be processed as a separate iteration using the same browser session.
+    </p>
+    <button class="btn-success" id="btn-execute" onclick="executeAll()" disabled>
+        Execute All Iterations
+    </button>
+    <div id="exec-progress" class="hidden" style="margin-top:1rem">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <div class="spinner"></div>
+            <span id="exec-status" style="font-size:.85rem">Processing...</span>
+        </div>
+    </div>
+</div>
+
+<!-- Step 4: Results -->
+<div class="card hidden" id="results-card">
+    <h2><span class="step-num">4</span> Results</h2>
+    <div class="metrics" id="result-metrics"></div>
+    <table id="results-table"><thead></thead><tbody></tbody></table>
+    <div style="margin-top:1rem">
+        <button class="btn-secondary" onclick="viewReport()">View Full HTML Report</button>
+    </div>
+</div>
+
+<script>
+const API = '';
+
+function setStatus(id, cls, text) {
+    const el = document.getElementById(id);
+    el.className = 'status ' + cls;
+    el.textContent = text;
+}
+
+function log(area, msg) {
+    const el = document.getElementById(area);
+    el.classList.remove('hidden');
+    el.textContent += msg + '\n';
+    el.scrollTop = el.scrollHeight;
+}
+
+async function startAndLogin() {
+    const btn = document.getElementById('btn-start');
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+    document.getElementById('login-log').textContent = '';
+
+    try {
+        // Start browser
+        setStatus('st-browser', 'status-wait', 'Browser: Starting...');
+        let res = await fetch(API + '/api/session/start', {method:'POST'});
+        let data = await res.json();
+        log('login-log', '> ' + data.message);
+
+        if (data.status === 'error') throw new Error(data.message);
+        setStatus('st-browser', 'status-ok', 'Browser: Running');
+        document.getElementById('btn-stop').disabled = false;
+
+        // Login
+        setStatus('st-login', 'status-wait', 'Login: Running...');
+        const suitePath = document.getElementById('suite-path').value;
+        res = await fetch(API + '/api/session/login', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({suite_path: suitePath})
+        });
+        data = await res.json();
+
+        for (const step of (data.steps || [])) {
+            const icon = step.status === 'pass' ? 'PASS' : 'FAIL';
+            log('login-log', `  [${icon}] ${step.step_id} ${step.name} (${step.duration_ms}ms)${step.error ? ' - ' + step.error : ''}`);
+        }
+
+        if (data.logged_in) {
+            setStatus('st-login', 'status-ok', 'Login: Success');
+            document.getElementById('btn-load').disabled = false;
+            log('login-log', '> Login successful');
+        } else {
+            setStatus('st-login', 'status-err', 'Login: Failed');
+            log('login-log', '> Login FAILED');
+        }
+    } catch(e) {
+        setStatus('st-browser', 'status-err', 'Browser: Error');
+        log('login-log', '> Error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Start Browser & Login';
+}
+
+async function stopBrowser() {
+    await fetch(API + '/api/session/stop', {method:'POST'});
+    setStatus('st-browser', 'status-idle', 'Browser: Off');
+    setStatus('st-login', 'status-idle', 'Login: Pending');
+    document.getElementById('btn-stop').disabled = true;
+    document.getElementById('btn-load').disabled = true;
+    document.getElementById('btn-execute').disabled = true;
+}
+
+async function loadData() {
+    const btn = document.getElementById('btn-load');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    setStatus('st-data', 'status-wait', 'Data: Loading...');
+
+    try {
+        const excelPath = document.getElementById('excel-path').value;
+        const res = await fetch(API + '/api/data/load', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({excel_path: excelPath})
+        });
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.detail || 'Failed to load');
+
+        document.getElementById('data-preview').classList.remove('hidden');
+        document.getElementById('data-info').innerHTML =
+            `<strong>${data.rows} rows</strong> found` +
+            (data.errors ? ` <span style="color:var(--fail)">(${data.errors.length} warnings)</span>` : '');
+
+        // Build preview table
+        const preview = data.preview || [];
+        if (preview.length > 0) {
+            const keys = Object.keys(preview[0]).filter(k => !k.startsWith('_'));
+            const thead = document.querySelector('#data-table thead');
+            thead.innerHTML = '<tr>' + ['#', ...keys].map(k => `<th>${k}</th>`).join('') + '</tr>';
+            const tbody = document.querySelector('#data-table tbody');
+            tbody.innerHTML = preview.map((row, i) =>
+                '<tr>' + [`<td>${i+1}</td>`, ...keys.map(k => `<td>${row[k] || ''}</td>`)].join('') + '</tr>'
+            ).join('');
+        }
+
+        setStatus('st-data', 'status-ok', `Data: ${data.rows} rows`);
+        document.getElementById('btn-execute').disabled = false;
+        document.getElementById('btn-execute').textContent = `Execute All (${data.rows} iterations)`;
+    } catch(e) {
+        setStatus('st-data', 'status-err', 'Data: Error');
+        alert('Error: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Load & Preview';
+}
+
+async function executeAll() {
+    const btn = document.getElementById('btn-execute');
+    btn.disabled = true;
+    setStatus('st-exec', 'status-wait', 'Execution: Running...');
+    document.getElementById('exec-progress').classList.remove('hidden');
+    document.getElementById('exec-status').textContent = 'Processing all iterations...';
+
+    try {
+        const res = await fetch(API + '/api/execute', {method:'POST'});
+        const data = await res.json();
+
+        document.getElementById('exec-progress').classList.add('hidden');
+
+        if (!res.ok) throw new Error(data.detail || 'Execution failed');
+
+        setStatus('st-exec', 'status-ok',
+            `Done: ${data.passed} passed, ${data.failed} failed`);
+
+        showResults(data);
+    } catch(e) {
+        setStatus('st-exec', 'status-err', 'Execution: Error');
+        document.getElementById('exec-status').textContent = 'Error: ' + e.message;
+        document.querySelector('.spinner')?.remove();
+    }
+    btn.disabled = false;
+}
+
+function showResults(data) {
+    const card = document.getElementById('results-card');
+    card.classList.remove('hidden');
+
+    const metrics = document.getElementById('result-metrics');
+    metrics.innerHTML = `
+        <div class="metric"><div class="metric-val">${data.total}</div><div class="metric-label">Total</div></div>
+        <div class="metric"><div class="metric-val" style="color:var(--pass)">${data.passed}</div><div class="metric-label">Passed</div></div>
+        <div class="metric"><div class="metric-val" style="color:var(--fail)">${data.failed}</div><div class="metric-label">Failed</div></div>
+        <div class="metric"><div class="metric-val">${((data.passed/data.total)*100).toFixed(0)}%</div><div class="metric-label">Pass Rate</div></div>
+    `;
+
+    const thead = document.querySelector('#results-table thead');
+    thead.innerHTML = '<tr><th>#</th><th>Name</th><th>Status</th><th>Duration</th><th>Tokens</th><th>Details</th></tr>';
+
+    const tbody = document.querySelector('#results-table tbody');
+    tbody.innerHTML = (data.results || []).map(r => {
+        const badge = r.status === 'pass' ? 'badge-pass' : 'badge-fail';
+        const errors = (r.steps || []).filter(s => s.error).map(s => s.error).join('; ');
+        return `<tr>
+            <td>${r.iteration}</td>
+            <td>${r.name}</td>
+            <td><span class="badge ${badge}">${r.status.toUpperCase()}</span></td>
+            <td>${(r.duration_ms/1000).toFixed(1)}s</td>
+            <td>${r.tokens}</td>
+            <td style="font-size:.7rem;color:var(--muted)">${errors || 'OK'}</td>
+        </tr>`;
+    }).join('');
+}
+
+function viewReport() {
+    window.open(API + '/api/report', '_blank');
+}
+</script>
+</body>
+</html>

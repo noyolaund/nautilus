@@ -116,5 +116,16 @@ def proxy_jnj(host: str, port: int | None):
     uvicorn.run("proxy.jnj_proxy:jnj_proxy_app", host=host, port=bind_port, log_level="info")
 
 
+@cli.command()
+@click.option("--host", default="127.0.0.1", help="Bind host.")
+@click.option("--port", default=5000, type=int, help="Bind port.")
+def dashboard(host: str, port: int):
+    """Start the JDE Automation Dashboard web app."""
+    import uvicorn
+    click.echo(f"Starting JDE Dashboard on http://{host}:{port}")
+    click.echo(f"Open your browser at http://{host}:{port}")
+    uvicorn.run("dashboard.app:dashboard_app", host=host, port=port, log_level="info")
+
+
 if __name__ == "__main__":
     cli()
