@@ -12,7 +12,7 @@
     "source_id": "report_versions",
     "source_type": "excel_sharepoint",
     "sharepoint": {
-      "site_url": "https://company.sharepoint.com/sites/ReportsTeam",
+      "site_url": "e1w0000036.jnj.com:9220/jde/E1Menu.maf",
       "file_path": "Shared Documents/Report_Versions.xlsx",
       "auth_method": "client_credentials",
       "tenant_id": null,
@@ -66,12 +66,12 @@
   "test_cases": [
     {
       "test_id": "TC-JDE-CPY",
-      "name": "Copy report version {{data.app_report}} — {{data.current_version}} to {{data.new_version}}",
-      "description": "Copy report version for {{data.app_report}}: duplicate {{data.current_version}} as {{data.new_version}} (EDO replaced with DPS)",
+      "name": "Copy report version - ",
+      "description": "Copy report version",
       "tags": ["jde", "report_version", "copy", "data_driven"],
       "platform": "jde_e1",
-      "base_url": "https://jde.company.com/jde/E1Menu.maf",
-      "preconditions": "User is logged into JDE. Report {{data.app_report}} with version {{data.current_version}} exists.",
+      "base_url": "http://e1w0000036.jnj.com:9222/jde/E1Menu.maf",
+      "preconditions": "User is logged into JDE. Report exists.",
       "priority": "high",
       "steps": [
         {
@@ -79,7 +79,7 @@
           "name": "Navigate to JDE EnterpriseOne",
           "action": "navigate",
           "data": {
-            "value": "https://jde.company.com/jde/E1Menu.maf",
+            "value": "http://e1w0000036.jnj.com:9222/jde/E1Menu.maf",
             "sensitive": false
           },
           "timeout_ms": 45000,
@@ -88,14 +88,14 @@
         },
         {
           "step_id": "S002",
-          "name": "Enter credentials and log in",
-          "action": "custom",
+          "name": "Enter username",
+          "action": "type",
           "target": {
-            "description": "Enter the username in the User ID field and the password in the Password field, then click the Sign In button to log into JDE EnterpriseOne",
+            "description": "in the 'User' field",
             "selector_strategy": "ai"
           },
           "data": {
-            "value": "Login with configured JDE credentials",
+            "value": "jnoyolam",
             "sensitive": true
           },
           "timeout_ms": 30000,
@@ -105,167 +105,249 @@
         },
         {
           "step_id": "S003",
-          "name": "Expand Actions menu",
-          "action": "click",
+          "name": "Enter password",
+          "action": "type",
           "target": {
-            "description": "the Actions menu or dropdown button in the JDE toolbar to expand the available actions",
+            "description": "password in the Password field",
             "selector_strategy": "ai"
           },
-          "timeout_ms": 15000,
+          "data": {
+            "value": "AmdsamI8!",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
           "retry_count": 2,
-          "pre_wait_ms": 3000
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
         },
         {
           "step_id": "S004",
-          "name": "Click Submit Job",
+          "name": "Login",
           "action": "click",
           "target": {
-            "description": "the Submit Job option in the expanded Actions menu",
-            "selector_strategy": "ai"
-          },
-          "timeout_ms": 15000,
-          "retry_count": 2,
-          "pre_wait_ms": 1000
-        },
-        {
-          "step_id": "S005",
-          "name": "Fill Batch Application with {{data.app_report}}",
-          "action": "type",
-          "target": {
-            "description": "the Batch Application input field in the Submit Job form",
-            "selector_strategy": "ai"
-          },
-          "data": {
-            "value": "{{data.app_report}}",
-            "clear_before": true,
-            "sensitive": false
-          },
-          "timeout_ms": 15000,
-          "retry_count": 2,
-          "pre_wait_ms": 2000
-        },
-        {
-          "step_id": "S006",
-          "name": "Click Find icon to search versions",
-          "action": "click",
-          "target": {
-            "description": "the Find icon or Search button to look up versions for the batch application",
-            "selector_strategy": "ai"
-          },
-          "timeout_ms": 20000,
-          "retry_count": 2,
-          "pre_wait_ms": 1000
-        },
-        {
-          "step_id": "S007",
-          "name": "Fill first column filter with {{data.current_version}}",
-          "action": "type",
-          "target": {
-            "description": "the first column filter field or QBE (Query By Example) row in the versions grid to search for a specific version",
-            "selector_strategy": "ai"
-          },
-          "data": {
-            "value": "{{data.current_version}}",
-            "clear_before": true,
-            "sensitive": false
-          },
-          "timeout_ms": 15000,
-          "retry_count": 2,
-          "pre_wait_ms": 2000
-        },
-        {
-          "step_id": "S008",
-          "name": "Press Enter to execute search",
-          "action": "custom",
-          "target": {
-            "description": "Press the Enter key on the keyboard to execute the search and filter the versions grid",
-            "selector_strategy": "ai"
-          },
-          "timeout_ms": 20000,
-          "retry_count": 1,
-          "pre_wait_ms": 500
-        },
-        {
-          "step_id": "S009",
-          "name": "Mark the checkbox for version {{data.current_version}}",
-          "action": "click",
-          "target": {
-            "description": "the row selection checkbox next to the version {{data.current_version}} in the results grid",
-            "selector_strategy": "ai"
-          },
-          "timeout_ms": 15000,
-          "retry_count": 2,
-          "pre_wait_ms": 2000
-        },
-        {
-          "step_id": "S010",
-          "name": "Click Copy icon",
-          "action": "click",
-          "target": {
-            "description": "the Copy icon or Copy button in the toolbar to duplicate the selected version",
-            "selector_strategy": "ai"
-          },
-          "timeout_ms": 15000,
-          "retry_count": 2,
-          "pre_wait_ms": 1000
-        },
-        {
-          "step_id": "S011",
-          "name": "Fill New Version field with {{data.new_version}}",
-          "action": "type",
-          "target": {
-            "description": "the New Version input field in the Copy Version dialog, where the new version identifier is entered",
-            "selector_strategy": "ai"
-          },
-          "data": {
-            "value": "{{data.new_version}}",
-            "clear_before": true,
-            "sensitive": false
-          },
-          "timeout_ms": 15000,
-          "retry_count": 2,
-          "pre_wait_ms": 2000
-        },
-        {
-          "step_id": "S012",
-          "name": "Fill Version Title with DPS - {{data.object_name}}",
-          "action": "type",
-          "target": {
-            "description": "the Version Title or Description input field in the Copy Version dialog",
-            "selector_strategy": "ai"
-          },
-          "data": {
-            "value": "DPS - {{data.object_name}}",
-            "clear_before": true,
-            "sensitive": false
-          },
-          "timeout_ms": 15000,
-          "retry_count": 2,
-          "pre_wait_ms": 500
-        },
-        {
-          "step_id": "S013",
-          "name": "Click OK to confirm copy",
-          "action": "click",
-          "target": {
-            "description": "the OK button to confirm and execute the version copy operation",
+            "description": "the 'Sign In' button",
             "selector_strategy": "ai"
           },
           "timeout_ms": 30000,
           "retry_count": 2,
-          "pre_wait_ms": 1000,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S005",
+          "name": "Screenshot order confirmation",
+          "action": "screenshot",
+          "timeout_ms": 10000,
+          "retry_count": 0
+        },
+        {
+          "step_id": "S006",
+          "name": "Submit Job",
+          "action": "click",
+          "target": {
+            "description": "in the 'Submit Job' text",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S007",
+          "name": "Screenshot order confirmation",
+          "action": "screenshot",
+          "timeout_ms": 10000,
+          "retry_count": 0
+        },
+        {
+          "step_id": "S008",
+          "name": "Enter Batch app",
+          "action": "type",
+          "target": {
+            "description": "in the 'Batch Application' field",
+            "selector": "#C0_11",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "R4311Z1I",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S009",
+          "name": "Click the Find button",
+          "action": "key_press",
+          "data": {
+            "value": "Control+Alt+I",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S010",
+          "name": "Enter Current version",
+          "action": "type",
+          "target": {
+            "description": "in the 'Batch Application' field",
+            "selector": "input[name='qbe0_1.1']",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "EDOES011",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S011",
+          "name": "Enter Current version",
+          "action": "key_press",
+          "data": {
+            "value": "Enter",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S012",
+          "name": "Marck the checkbox",
+          "action": "click",
+          "target": {
+            "description": "in the 'Select All' checkbox",
+            "selector": "#selectAll0_1",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S013",
+          "name": "Click in the copy button",
+          "action": "click",
+          "target": {
+            "description": "in the 'Copy' button",
+            "selector": "#hc_Copy",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S014",
-          "name": "Screenshot confirmation for {{data.app_report}}",
+          "name": "Enter Current version",
+          "action": "type",
+          "target": {
+            "description": "in the 'Batch Application' field",
+            "selector": "#C0_17",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "DPSES0115",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S015",
+          "name": "Enter Current version",
+          "action": "type",
+          "target": {
+            "description": "in the 'Batch Application' field",
+            "selector": "#C0_21",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "DPS5 - PO Inbound - Mitek - JDEPOASN",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S016",
+          "name": "Click in the copy button",
+          "action": "click",
+          "target": {
+            "description": "in the 'Copy' button",
+            "selector": "#hc_OK",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S017",
+          "name": "Enter Current version",
+          "action": "type",
+          "target": {
+            "description": "in the 'Batch Application' field",
+            "selector": "input[name='qbe0_1.1']",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "DPSES0115",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S018",
+          "name": "Enter Current version",
+          "action": "key_press",
+          "data": {
+            "value": "Enter",
+            "sensitive": true
+          },
+          "timeout_ms": 30000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S019",
+          "name": "Screenshot order confirmation",
           "action": "screenshot",
-          "timeout_ms": 5000,
-          "retry_count": 0,
-          "pre_wait_ms": 3000
+          "timeout_ms": 10000,
+          "retry_count": 0
         }
       ],
-      "expected_result": "Version {{data.new_version}} for report {{data.app_report}} is created successfully with title 'DPS - {{data.object_name}}'"
+      "expected_result": "Version is created successfully with title 'DPS'"
     }
   ]
 }

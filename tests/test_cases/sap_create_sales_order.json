@@ -1,0 +1,273 @@
+{
+  "suite_id": "SUITE-SAP-SALES-001",
+  "suite_name": "SAP VA01 – Create Sales Order",
+  "environment": "test",
+  "browser": "chromium",
+  "headless": false,
+  "parallel": false,
+  "test_cases": [
+    {
+      "test_id": "TC-SALES-ORDER-001",
+      "name": "DEL-07-05-TC01 Create Sales Order - Happy Path",
+      "description": "Create Sales Order using VA01 with valid data",
+      "tags": ["sap", "sales_order", "happy_path"],
+      "platform": "sap_gui",
+      "base_url": "https://erp.jnj.com/",
+      "preconditions": "User is logged into SAP and VA01 is accessible.",
+      "priority": "high",
+      "steps": [
+        {
+          "step_id": "S001",
+          "name": "Navigate to SAP ERP",
+          "action": "navigate",
+          "data": {
+            "value": "https://erp.jnj.com/",
+            "sensitive": false
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1,
+          "pre_wait_ms": 0
+        },
+        {
+          "step_id": "S002",
+          "name": "Enter username",
+          "action": "type",
+          "target": {
+            "description": "in the 'Email' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "jnoyolam@its.jnj.com",
+            "sensitive": false
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1,
+          "pre_wait_ms": 0
+        },
+        {
+          "step_id": "S003",
+          "name": "Login button",
+          "action": "click",
+          "target": {
+            "description": "in the 'Next' button",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1,
+          "pre_wait_ms": 0
+        },
+        {
+          "step_id": "S004",
+          "name": "Navigate to SAP ERP",
+          "action": "navigate",
+          "data": {
+            "value": "https://jnj-mt-pq.launchpad.cfapps.us10.hana.ondemand.com/site?siteId=934f71d8-c3fd-4761-b116-e78e123ef96b#Shell-home",
+            "sensitive": false
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1,
+          "pre_wait_ms": 0
+        },
+        {
+          "step_id": "S005",
+          "name": "Initial screenshot",
+          "action": "screenshot",
+          "timeout_ms": 10000,
+          "retry_count": 0
+        },
+        {
+          "step_id": "S003",
+          "name": "Search button",
+          "action": "click",
+          "target": {
+            "description": "in the 'Open Search' button",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1,
+          "pre_wait_ms": 0
+        },
+        {
+          "step_id": "S003",
+          "name": "Open Create Sales Order - VA",
+          "action": "type",
+          "target": {
+            "description": "in the 'Search' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "Create Sales Order - VA",
+            "sensitive": false
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S004",
+          "name": "Fill Order Type",
+          "action": "type",
+          "target": {
+            "description": "in the 'Order Type' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "ZIC",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S005",
+          "name": "Fill Sales Organization",
+          "action": "type",
+          "target": {
+            "description": "in the 'Sales Organization' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "CH50",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S006",
+          "name": "Fill Distribution Channel",
+          "action": "type",
+          "target": {
+            "description": "in the 'Distribution Channel' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "30",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S007",
+          "name": "Fill Division",
+          "action": "type",
+          "target": {
+            "description": "in the 'Division' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "10",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S008",
+          "name": "Continue to sales order",
+          "action": "click",
+          "target": {
+            "description": "in the 'Continue' button",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S009",
+          "name": "Fill Sold-To Party",
+          "action": "type",
+          "target": {
+            "description": "in the 'Sold-To-Party' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "Z999277",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S010",
+          "name": "Fill Customer Reference",
+          "action": "type",
+          "target": {
+            "description": "in the 'Customer Reference' field",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "0022",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S011",
+          "name": "Enter Material",
+          "action": "type",
+          "target": {
+            "description": "in the first cell under the column 'Enter Material'",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "3541158-13",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S012",
+          "name": "Enter Quantity",
+          "action": "type",
+          "target": {
+            "description": "in the first cell under 'Enter Quantity'",
+            "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "1",
+            "sensitive": false
+          },
+          "timeout_ms": 20000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S013",
+          "name": "Save Sales Order",
+          "action": "click",
+          "target": {
+            "description": "in the 'Save Sales Order' button",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 30000,
+          "retry_count": 1
+        },
+        {
+          "step_id": "S014",
+          "name": "Capture Document Number",
+          "action": "extract",
+          "target": {
+            "description": "the document number from the bottom message",
+            "selector_strategy": "ai"
+          },
+          "output": {
+            "variable_name": "documentNumber",
+            "source": "confirmation_message"
+          },
+          "timeout_ms": 20000,
+          "retry_count": 0
+        },
+        {
+          "step_id": "S015",
+          "name": "Final screenshot",
+          "action": "screenshot",
+          "timeout_ms": 10000,
+          "retry_count": 0
+        }
+      ],
+      "expected_result": "Sales Order is created successfully and document number is displayed."
+    }
+  ]
+}
