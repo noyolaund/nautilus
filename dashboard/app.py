@@ -75,12 +75,11 @@ def create_dashboard_app() -> FastAPI:
 
     @app.post("/api/session/login")
     async def login(request: Request):
-        """Load the test suite JSON and execute the login (first test case)."""
+        """Load the hardcoded JDE test suite and execute the login (first test case)."""
         global _suite_request, _suite_raw
-        body = await request.json()
-        suite_path = body.get("suite_path", "")
+        suite_path = "tests/test_cases/jde_copy_report_version.json"
 
-        if not suite_path or not Path(suite_path).exists():
+        if not Path(suite_path).exists():
             raise HTTPException(status_code=400, detail=f"Suite file not found: {suite_path}")
 
         raw = json.loads(Path(suite_path).read_text(encoding="utf-8"))
@@ -134,19 +133,36 @@ def create_dashboard_app() -> FastAPI:
         parser = ExcelParser(excel_path, _data_source_config)
         _data_context = parser.parse()
 
-        if _data_context.validation_errors:
-            return {
-                "status": "warning",
-                "rows": _data_context.total_rows,
-                "errors": _data_context.validation_errors[:10],
-                "preview": _format_preview(_data_context),
-            }
+        # Filter: only keep rows where column B (app_report) starts with R or P
+        skipped_rows: list[dict] = []
+        for sheet_name, rows in list(_data_context.sheets.items()):
+            valid_rows = []
+            for r in rows:
+                app_report = str(r.values.get("app_report", "")).strip().upper()
+                if app_report and (app_report.startswith("R") or app_report.startswith("P")):
+                    valid_rows.append(r)
+                else:
+                    skipped_rows.append({
+                        "row": r.row_index,
+                        "app_report": app_report,
+                        "reason": "Column B must start with 'R' or 'P'",
+                    })
+            _data_context.sheets[sheet_name] = valid_rows
+        _data_context.total_rows = sum(len(rs) for rs in _data_context.sheets.values())
 
-        return {
-            "status": "success",
+        response = {
             "rows": _data_context.total_rows,
+            "skipped_rows": skipped_rows,
+            "skipped_count": len(skipped_rows),
             "preview": _format_preview(_data_context),
         }
+
+        if _data_context.validation_errors:
+            response["status"] = "warning"
+            response["errors"] = _data_context.validation_errors[:10]
+        else:
+            response["status"] = "success"
+        return response
 
     @app.get("/api/data/preview")
     async def data_preview():

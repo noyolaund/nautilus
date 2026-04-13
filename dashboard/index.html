@@ -69,11 +69,10 @@ td{padding:6px 10px;border-top:1px solid var(--border)}
 <!-- Step 1: Start Browser & Login -->
 <div class="card">
     <h2><span class="step-num">1</span> Start Browser & Login</h2>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">
+        Launches a Chromium instance and executes the JDE login flow.
+    </p>
     <div class="row">
-        <div class="input-group">
-            <label>Test Suite JSON Path</label>
-            <input type="text" id="suite-path" value="tests/test_cases/jde_copy_report_version.json" placeholder="path/to/suite.json">
-        </div>
         <button class="btn-primary" id="btn-start" onclick="startAndLogin()">Start Browser & Login</button>
         <button class="btn-danger" id="btn-stop" onclick="stopBrowser()" disabled>Stop Browser</button>
     </div>
@@ -83,15 +82,19 @@ td{padding:6px 10px;border-top:1px solid var(--border)}
 <!-- Step 2: Load Excel Data -->
 <div class="card">
     <h2><span class="step-num">2</span> Load Excel Data</h2>
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">
+        Only rows where <strong>column B (App / Report)</strong> starts with <code>R</code> or <code>P</code> will be processed.
+    </p>
     <div class="row">
         <div class="input-group">
-            <label>Excel File Path (local or downloaded from SharePoint)</label>
+            <label>Excel File Path (local or OneDrive synced SharePoint)</label>
             <input type="text" id="excel-path" placeholder="C:\path\to\Report_Versions.xlsx">
         </div>
         <button class="btn-primary" id="btn-load" onclick="loadData()" disabled>Load & Preview</button>
     </div>
     <div id="data-preview" class="hidden">
         <div id="data-info" style="margin-top:1rem;font-size:.85rem"></div>
+        <div id="skipped-info" class="hidden" style="margin-top:.5rem;padding:.5rem 1rem;background:var(--fail-bg);color:var(--fail);border-radius:6px;font-size:.8rem"></div>
         <div style="overflow-x:auto">
             <table id="data-table"><thead></thead><tbody></tbody></table>
         </div>
@@ -158,13 +161,12 @@ async function startAndLogin() {
         setStatus('st-browser', 'status-ok', 'Browser: Running');
         document.getElementById('btn-stop').disabled = false;
 
-        // Login
+        // Login (uses hardcoded JDE suite path)
         setStatus('st-login', 'status-wait', 'Login: Running...');
-        const suitePath = document.getElementById('suite-path').value;
         res = await fetch(API + '/api/session/login', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({suite_path: suitePath})
+            body: '{}'
         });
         data = await res.json();
 
@@ -217,8 +219,21 @@ async function loadData() {
 
         document.getElementById('data-preview').classList.remove('hidden');
         document.getElementById('data-info').innerHTML =
-            `<strong>${data.rows} rows</strong> found` +
+            `<strong>${data.rows} valid rows</strong> to be processed` +
             (data.errors ? ` <span style="color:var(--fail)">(${data.errors.length} warnings)</span>` : '');
+
+        // Show skipped rows (those that don't start with R or P)
+        const skippedInfo = document.getElementById('skipped-info');
+        if (data.skipped_count > 0) {
+            skippedInfo.classList.remove('hidden');
+            const skippedList = data.skipped_rows.slice(0, 5).map(s =>
+                `Row ${s.row}: "${s.app_report}"`
+            ).join(', ');
+            const more = data.skipped_count > 5 ? ` and ${data.skipped_count - 5} more` : '';
+            skippedInfo.innerHTML = `<strong>${data.skipped_count} rows skipped</strong> (column B doesn't start with R or P): ${skippedList}${more}`;
+        } else {
+            skippedInfo.classList.add('hidden');
+        }
 
         // Build preview table
         const preview = data.preview || [];
