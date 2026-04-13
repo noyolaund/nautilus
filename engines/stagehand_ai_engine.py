@@ -461,8 +461,7 @@ class StagehandAIEngine(BaseEngine):
                 case ActionType.ASSERT_VISIBLE:
                     desc = step.target.description  # type: ignore[union-attr]
 
-                    # 1. First try to find the literal text on the page
-                    #    (strips leading "the" / quotes for cleaner match)
+                    # Clean the description: strip leading "the"/"a"/"an", quotes
                     import re as _re
                     cleaned = _re.sub(
                         r"^\s*(the|a|an)\s+|['\"]",
@@ -470,6 +469,9 @@ class StagehandAIEngine(BaseEngine):
                         desc,
                         flags=_re.IGNORECASE,
                     ).strip()
+
+                    # 1. Try literal text on main page first
+                    text_found = False
                     try:
                         locator = page.get_by_text(cleaned, exact=False)
                         await locator.first.wait_for(
@@ -477,9 +479,34 @@ class StagehandAIEngine(BaseEngine):
                             timeout=min(step.timeout_ms, 3000),
                         )
                         resolved_selector = f'text="{cleaned}"'
-                        self.logger.info("Plain text found: %s", cleaned)
+                        self.logger.info("Plain text found on page: %s", cleaned)
+                        text_found = True
                     except (PwTimeout, Exception):
-                        # 2. Fall back to LLM-based element search
+                        pass
+
+                    # 2. If not on main page, search all iframes
+                    if not text_found:
+                        try:
+                            for frame in page.frames:
+                                if frame == page.main_frame:
+                                    continue
+                                try:
+                                    flocator = frame.get_by_text(cleaned, exact=False)
+                                    await flocator.first.wait_for(
+                                        state="visible",
+                                        timeout=min(step.timeout_ms, 2000),
+                                    )
+                                    resolved_selector = f'iframe:{frame.name or frame.url[:40]} text="{cleaned}"'
+                                    self.logger.info("Plain text found in iframe: %s", cleaned)
+                                    text_found = True
+                                    break
+                                except (PwTimeout, Exception):
+                                    continue
+                        except Exception:
+                            pass
+
+                    # 3. Fall back to LLM-based element search
+                    if not text_found:
                         result = await self._call_observe(
                             page, f"Find {desc} on the page"
                         )

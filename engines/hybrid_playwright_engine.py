@@ -500,7 +500,7 @@ class HybridPlaywrightEngine(BaseEngine):
                 case ActionType.ASSERT_VISIBLE:
                     desc = step.target.description  # type: ignore[union-attr]
 
-                    # 1. First try to find the literal text on the page
+                    # Clean description
                     import re as _re
                     cleaned = _re.sub(
                         r"^\s*(the|a|an)\s+|['\"]",
@@ -508,6 +508,8 @@ class HybridPlaywrightEngine(BaseEngine):
                         desc,
                         flags=_re.IGNORECASE,
                     ).strip()
+
+                    # 1. Try literal text on main page
                     text_found = False
                     try:
                         text_locator = page.get_by_text(cleaned, exact=False)
@@ -516,13 +518,34 @@ class HybridPlaywrightEngine(BaseEngine):
                             timeout=min(step.timeout_ms, 3000),
                         )
                         resolved_selector = f'text="{cleaned}"'
-                        self.logger.info("Plain text found: %s", cleaned)
+                        self.logger.info("Plain text found on page: %s", cleaned)
                         text_found = True
                     except (PwTimeout, Exception):
                         pass
 
+                    # 2. Search all iframes
                     if not text_found:
-                        # 2. Fall back to the full resolution chain
+                        try:
+                            for frame in page.frames:
+                                if frame == page.main_frame:
+                                    continue
+                                try:
+                                    flocator = frame.get_by_text(cleaned, exact=False)
+                                    await flocator.first.wait_for(
+                                        state="visible",
+                                        timeout=min(step.timeout_ms, 2000),
+                                    )
+                                    resolved_selector = f'iframe:{frame.name or frame.url[:40]} text="{cleaned}"'
+                                    self.logger.info("Plain text found in iframe: %s", cleaned)
+                                    text_found = True
+                                    break
+                                except (PwTimeout, Exception):
+                                    continue
+                        except Exception:
+                            pass
+
+                    # 3. Fall back to the full resolution chain
+                    if not text_found:
                         locator, sel, tok = await self._resolve_element(page, step, test_case)
                         tokens_used += tok
                         resolved_selector = sel
