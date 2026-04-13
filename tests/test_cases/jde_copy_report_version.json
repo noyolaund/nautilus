@@ -98,9 +98,9 @@
             "value": "jnoyolam",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 15000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -115,9 +115,9 @@
             "value": "AmdsamI8!",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 15000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -135,13 +135,26 @@
         },
         {
           "step_id": "S005",
+          "name": "Login Assert",
+          "action": "assert_visible",
+          "target": {
+            "description": "Welcome!",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 10000,
+          "retry_count": 2,
+          "pre_wait_ms": 2000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S006",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
           "timeout_ms": 10000,
           "retry_count": 0
         },
         {
-          "step_id": "S006",
+          "step_id": "S007",
           "name": "Submit Job",
           "action": "click",
           "target": {
@@ -154,14 +167,14 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S007",
+          "step_id": "S008",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
           "timeout_ms": 10000,
           "retry_count": 0
         },
         {
-          "step_id": "S008",
+          "step_id": "S009",
           "name": "Enter Batch app",
           "action": "type",
           "target": {
@@ -180,7 +193,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S009",
+          "step_id": "S010",
           "name": "Click the Find button",
           "action": "key_press",
           "data": {
@@ -193,7 +206,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S010",
+          "step_id": "S011",
           "name": "Enter Current version",
           "action": "type",
           "target": {
@@ -212,7 +225,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S011",
+          "step_id": "S012",
           "name": "Enter Current version",
           "action": "key_press",
           "data": {
@@ -225,7 +238,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S012",
+          "step_id": "S013",
           "name": "Marck the checkbox",
           "action": "click",
           "target": {
@@ -240,7 +253,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S013",
+          "step_id": "S014",
           "name": "Click in the copy button",
           "action": "click",
           "target": {
@@ -255,7 +268,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S014",
+          "step_id": "S015",
           "name": "Enter Current version",
           "action": "type",
           "target": {
@@ -274,7 +287,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S015",
+          "step_id": "S016",
           "name": "Enter Current version",
           "action": "type",
           "target": {
@@ -293,7 +306,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S016",
+          "step_id": "S017",
           "name": "Click in the copy button",
           "action": "click",
           "target": {
@@ -308,7 +321,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S017",
+          "step_id": "S018",
           "name": "Enter Current version",
           "action": "type",
           "target": {
@@ -327,7 +340,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S018",
+          "step_id": "S019",
           "name": "Enter Current version",
           "action": "key_press",
           "data": {
@@ -340,7 +353,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S019",
+          "step_id": "S020",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
           "timeout_ms": 10000,
