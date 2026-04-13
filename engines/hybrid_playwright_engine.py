@@ -498,15 +498,39 @@ class HybridPlaywrightEngine(BaseEngine):
                         )
 
                 case ActionType.ASSERT_VISIBLE:
-                    locator, sel, tok = await self._resolve_element(page, step, test_case)
-                    tokens_used += tok
-                    resolved_selector = sel
-                    if locator is None:
-                        status = StepStatus.FAIL
-                        error_message = (
-                            f"Element not found after {step.timeout_ms}ms: "
-                            f"{step.target.description}"  # type: ignore[union-attr]
+                    desc = step.target.description  # type: ignore[union-attr]
+
+                    # 1. First try to find the literal text on the page
+                    import re as _re
+                    cleaned = _re.sub(
+                        r"^\s*(the|a|an)\s+|['\"]",
+                        "",
+                        desc,
+                        flags=_re.IGNORECASE,
+                    ).strip()
+                    text_found = False
+                    try:
+                        text_locator = page.get_by_text(cleaned, exact=False)
+                        await text_locator.first.wait_for(
+                            state="visible",
+                            timeout=min(step.timeout_ms, 3000),
                         )
+                        resolved_selector = f'text="{cleaned}"'
+                        self.logger.info("Plain text found: %s", cleaned)
+                        text_found = True
+                    except (PwTimeout, Exception):
+                        pass
+
+                    if not text_found:
+                        # 2. Fall back to the full resolution chain
+                        locator, sel, tok = await self._resolve_element(page, step, test_case)
+                        tokens_used += tok
+                        resolved_selector = sel
+                        if locator is None:
+                            status = StepStatus.FAIL
+                            error_message = (
+                                f"Element not found after {step.timeout_ms}ms: {desc}"
+                            )
 
                 case ActionType.ASSERT_TEXT:
                     locator, sel, tok = await self._resolve_element(page, step, test_case)

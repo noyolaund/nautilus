@@ -460,19 +460,39 @@ class StagehandAIEngine(BaseEngine):
 
                 case ActionType.ASSERT_VISIBLE:
                     desc = step.target.description  # type: ignore[union-attr]
-                    result = await self._call_observe(
-                        page, f"Find {desc} on the page"
-                    )
-                    tokens_used = result.get("tokens", 0)
-                    locator, sel = await self._resolve_and_locate(
-                        page, result, timeout=step.timeout_ms,
-                        original_desc=desc,
-                    )
-                    if locator:
-                        resolved_selector = sel
-                    else:
-                        status = StepStatus.FAIL
-                        error_message = f"Element not found: {desc}"
+
+                    # 1. First try to find the literal text on the page
+                    #    (strips leading "the" / quotes for cleaner match)
+                    import re as _re
+                    cleaned = _re.sub(
+                        r"^\s*(the|a|an)\s+|['\"]",
+                        "",
+                        desc,
+                        flags=_re.IGNORECASE,
+                    ).strip()
+                    try:
+                        locator = page.get_by_text(cleaned, exact=False)
+                        await locator.first.wait_for(
+                            state="visible",
+                            timeout=min(step.timeout_ms, 3000),
+                        )
+                        resolved_selector = f'text="{cleaned}"'
+                        self.logger.info("Plain text found: %s", cleaned)
+                    except (PwTimeout, Exception):
+                        # 2. Fall back to LLM-based element search
+                        result = await self._call_observe(
+                            page, f"Find {desc} on the page"
+                        )
+                        tokens_used = result.get("tokens", 0)
+                        locator, sel = await self._resolve_and_locate(
+                            page, result, timeout=step.timeout_ms,
+                            original_desc=desc,
+                        )
+                        if locator:
+                            resolved_selector = sel
+                        else:
+                            status = StepStatus.FAIL
+                            error_message = f"Element not found: {desc}"
 
                 case ActionType.ASSERT_TEXT:
                     desc = step.target.description  # type: ignore[union-attr]
