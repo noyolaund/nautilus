@@ -1,6 +1,6 @@
 {
   "suite_id": "SUITE-JDE-RPT-001",
-  "suite_name": "JDE E1 — Copy Report Version (EDO to DPS)",
+  "suite_name": "JDE E1 — Login (EDO to DPS)",
   "environment": "production",
   "browser": "chromium",
   "headless": false,

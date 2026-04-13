@@ -75,24 +75,32 @@ def create_dashboard_app() -> FastAPI:
 
     @app.post("/api/session/login")
     async def login(request: Request):
-        """Load the hardcoded JDE test suite and execute the login (first test case)."""
+        """Run login_assert.json — login success is determined by the assert_visible step."""
         global _suite_request, _suite_raw
-        suite_path = "tests/test_cases/jde_copy_report_version.json"
 
-        if not Path(suite_path).exists():
-            raise HTTPException(status_code=400, detail=f"Suite file not found: {suite_path}")
+        # 1. Load the login suite (runs the login flow, ends with assert_visible)
+        login_path = "tests/test_cases/login_assert.json"
+        if not Path(login_path).exists():
+            raise HTTPException(status_code=400, detail=f"Login suite not found: {login_path}")
 
-        raw = json.loads(Path(suite_path).read_text(encoding="utf-8"))
-        _suite_raw = raw.copy()
+        login_raw = json.loads(Path(login_path).read_text(encoding="utf-8"))
+        login_raw.pop("_data_source", None)
+        login_suite = TestSuiteRequest(**login_raw)
 
-        # Extract _data_source before validation
-        raw.pop("_data_source", None)
-        _suite_request = TestSuiteRequest(**raw)
+        # Force headless=False as required
+        login_suite.headless = False
 
-        if not _suite_request.test_cases:
-            raise HTTPException(status_code=400, detail="No test cases in suite")
+        # 2. Load the main suite for the iteration phase (keeps _data_source for Excel config)
+        main_path = "tests/test_cases/jde_copy_report_version.json"
+        if Path(main_path).exists():
+            main_raw = json.loads(Path(main_path).read_text(encoding="utf-8"))
+            _suite_raw = main_raw.copy()
+            main_raw.pop("_data_source", None)
+            _suite_request = TestSuiteRequest(**main_raw)
+            _suite_request.headless = False
 
-        result = await _session.run_login(_suite_request)
+        # 3. Execute the login flow — login success = assert_visible step passes
+        result = await _session.run_login(login_suite)
         return result
 
     @app.post("/api/session/stop")

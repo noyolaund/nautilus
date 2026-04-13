@@ -64,7 +64,8 @@ class SessionManager:
 
         self._pw = await async_playwright().start()
         browser_type = os.getenv("BROWSER_TYPE", "chromium")
-        headless = os.getenv("BROWSER_HEADLESS", "false").lower() == "true"
+        # Dashboard always runs with visible browser — user needs to see it
+        headless = False
         width = int(os.getenv("BROWSER_WIDTH", "1920"))
         height = int(os.getenv("BROWSER_HEIGHT", "1080"))
 
