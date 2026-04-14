@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -123,7 +123,10 @@ def create_dashboard_app() -> FastAPI:
     # --- Data endpoints -----------------------------------------------------
 
     @app.post("/api/data/upload")
-    async def upload_excel(file: UploadFile = File(...)):
+    async def upload_excel(
+        file: UploadFile = File(...),
+        sheet_name: str = Form("Sheet1"),
+    ):
         """Upload an xlsx file, save to temp, and parse it."""
         global _data_context, _data_source_config
 
@@ -148,9 +151,19 @@ def create_dashboard_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Failed to save upload: {exc}")
 
-        # Parse and filter (same logic as load_excel)
+        # Override sheet name from user input in the data source config
+        ds_raw = json.loads(json.dumps(_suite_raw["_data_source"]))  # deep copy
         try:
-            _data_source_config = DataSourceConfig(**_suite_raw["_data_source"])
+            for sheet_cfg in ds_raw["excel"]["sheets"]:
+                sheet_cfg["sheet_name"] = sheet_name
+            if "iteration" in ds_raw and ds_raw["iteration"] is not None:
+                ds_raw["iteration"]["sheet_name"] = sheet_name
+        except Exception:
+            pass
+
+        # Parse and filter
+        try:
+            _data_source_config = DataSourceConfig(**ds_raw)
             parser = ExcelParser(str(saved_path), _data_source_config)
             _data_context = parser.parse()
         except Exception as exc:

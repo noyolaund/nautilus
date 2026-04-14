@@ -85,17 +85,23 @@ td{padding:6px 10px;border-top:1px solid var(--border)}
     <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">
         Select an Excel file (.xlsx). Only rows where <strong>column B (App / Report)</strong> starts with <code>R</code> or <code>P</code> will be processed.
     </p>
-    <div class="row">
+    <div class="row" style="margin-bottom:.75rem">
         <input type="file" id="excel-file" accept=".xlsx" style="display:none" onchange="onFileSelected(event)">
         <button class="btn-secondary" id="btn-choose" onclick="document.getElementById('excel-file').click()" disabled>Choose File...</button>
         <div class="input-group">
             <label>Selected file</label>
             <input type="text" id="excel-filename" placeholder="No file selected" readonly style="background:var(--bg);color:var(--muted)">
         </div>
+    </div>
+    <div class="row">
+        <div class="input-group">
+            <label>Sheet name</label>
+            <input type="text" id="sheet-name" value="Sheet1" placeholder="Sheet1">
+        </div>
         <button class="btn-primary" id="btn-load" onclick="loadData()" disabled>Load & Preview</button>
     </div>
     <div id="data-preview" class="hidden">
-        <div id="data-info" style="margin-top:1rem;font-size:.85rem"></div>
+        <div id="data-info" style="margin-top:1rem;font-size:.9rem;font-weight:500"></div>
         <div id="skipped-info" class="hidden" style="margin-top:.5rem;padding:.5rem 1rem;background:var(--fail-bg);color:var(--fail);border-radius:6px;font-size:.8rem"></div>
         <div style="overflow-x:auto">
             <table id="data-table"><thead></thead><tbody></tbody></table>
@@ -225,8 +231,10 @@ async function loadData() {
 
     try {
         if (!_selectedFile) throw new Error('No file selected');
+        const sheetName = (document.getElementById('sheet-name').value || 'Sheet1').trim();
         const formData = new FormData();
         formData.append('file', _selectedFile);
+        formData.append('sheet_name', sheetName);
         const res = await fetch(API + '/api/data/upload', {
             method: 'POST',
             body: formData
@@ -262,16 +270,18 @@ async function loadData() {
             skippedInfo.classList.add('hidden');
         }
 
-        // Build preview table
+        // Build preview table — show only App / Report column
         const preview = data.preview || [];
+        const thead = document.querySelector('#data-table thead');
+        const tbody = document.querySelector('#data-table tbody');
         if (preview.length > 0) {
-            const keys = Object.keys(preview[0]).filter(k => !k.startsWith('_'));
-            const thead = document.querySelector('#data-table thead');
-            thead.innerHTML = '<tr>' + ['#', ...keys].map(k => `<th>${k}</th>`).join('') + '</tr>';
-            const tbody = document.querySelector('#data-table tbody');
+            thead.innerHTML = '<tr><th style="width:50px">#</th><th>App / Report</th></tr>';
             tbody.innerHTML = preview.map((row, i) =>
-                '<tr>' + [`<td>${i+1}</td>`, ...keys.map(k => `<td>${row[k] || ''}</td>`)].join('') + '</tr>'
+                `<tr><td>${i+1}</td><td>${row.app_report || ''}</td></tr>`
             ).join('');
+        } else {
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
         }
 
         setStatus('st-data', 'status-ok', `Data: ${data.rows} rows`);
