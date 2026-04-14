@@ -83,12 +83,14 @@ td{padding:6px 10px;border-top:1px solid var(--border)}
 <div class="card">
     <h2><span class="step-num">2</span> Load Excel Data</h2>
     <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">
-        Only rows where <strong>column B (App / Report)</strong> starts with <code>R</code> or <code>P</code> will be processed.
+        Select an Excel file (.xlsx). Only rows where <strong>column B (App / Report)</strong> starts with <code>R</code> or <code>P</code> will be processed.
     </p>
     <div class="row">
+        <input type="file" id="excel-file" accept=".xlsx" style="display:none" onchange="onFileSelected(event)">
+        <button class="btn-secondary" id="btn-choose" onclick="document.getElementById('excel-file').click()" disabled>Choose File...</button>
         <div class="input-group">
-            <label>Excel File Path (local or OneDrive synced SharePoint)</label>
-            <input type="text" id="excel-path" placeholder="C:\path\to\Report_Versions.xlsx">
+            <label>Selected file</label>
+            <input type="text" id="excel-filename" placeholder="No file selected" readonly style="background:var(--bg);color:var(--muted)">
         </div>
         <button class="btn-primary" id="btn-load" onclick="loadData()" disabled>Load & Preview</button>
     </div>
@@ -177,7 +179,7 @@ async function startAndLogin() {
 
         if (data.logged_in) {
             setStatus('st-login', 'status-ok', 'Login: Success');
-            document.getElementById('btn-load').disabled = false;
+            document.getElementById('btn-choose').disabled = false;
             log('login-log', '> Login successful');
         } else {
             setStatus('st-login', 'status-err', 'Login: Failed');
@@ -200,6 +202,21 @@ async function stopBrowser() {
     document.getElementById('btn-execute').disabled = true;
 }
 
+let _selectedFile = null;
+
+function onFileSelected(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        alert('Please select an .xlsx file. Got: ' + file.name);
+        event.target.value = '';
+        return;
+    }
+    _selectedFile = file;
+    document.getElementById('excel-filename').value = file.name;
+    document.getElementById('btn-load').disabled = false;
+}
+
 async function loadData() {
     const btn = document.getElementById('btn-load');
     btn.disabled = true;
@@ -207,11 +224,12 @@ async function loadData() {
     setStatus('st-data', 'status-wait', 'Data: Loading...');
 
     try {
-        const excelPath = document.getElementById('excel-path').value;
-        const res = await fetch(API + '/api/data/load', {
+        if (!_selectedFile) throw new Error('No file selected');
+        const formData = new FormData();
+        formData.append('file', _selectedFile);
+        const res = await fetch(API + '/api/data/upload', {
             method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({excel_path: excelPath})
+            body: formData
         });
 
         // Handle non-JSON responses (e.g. HTML 500 error pages)

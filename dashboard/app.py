@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -121,6 +121,68 @@ def create_dashboard_app() -> FastAPI:
         }
 
     # --- Data endpoints -----------------------------------------------------
+
+    @app.post("/api/data/upload")
+    async def upload_excel(file: UploadFile = File(...)):
+        """Upload an xlsx file, save to temp, and parse it."""
+        global _data_context, _data_source_config
+
+        if not file.filename.lower().endswith(".xlsx"):
+            raise HTTPException(status_code=400, detail="Only .xlsx files accepted")
+
+        if not _suite_raw or "_data_source" not in _suite_raw:
+            raise HTTPException(status_code=400, detail="Run Start Browser & Login first.")
+
+        # Save uploaded file to the run dir (or a temp location)
+        run_dir = _session.run_dir or Path("logs")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        saved_path = run_dir / f"uploaded_{file.filename}"
+
+        try:
+            content = await file.read()
+            if len(content) > 50 * 1024 * 1024:  # 50 MB safety limit
+                raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+            saved_path.write_bytes(content)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to save upload: {exc}")
+
+        # Parse and filter (same logic as load_excel)
+        try:
+            _data_source_config = DataSourceConfig(**_suite_raw["_data_source"])
+            parser = ExcelParser(str(saved_path), _data_source_config)
+            _data_context = parser.parse()
+        except Exception as exc:
+            import traceback
+            err = f"{type(exc).__name__}: {exc}"
+            _session.logger.error("Excel parse error: %s\n%s", err, traceback.format_exc())
+            raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {err}")
+
+        skipped_rows: list[dict] = []
+        for sheet_name, rows in list(_data_context.sheets.items()):
+            valid_rows = []
+            for r in rows:
+                app_report = str(r.values.get("app_report", "")).strip().upper()
+                if app_report and (app_report.startswith("R") or app_report.startswith("P")):
+                    valid_rows.append(r)
+                else:
+                    skipped_rows.append({
+                        "row": r.row_index,
+                        "app_report": app_report,
+                        "reason": "Column B must start with 'R' or 'P'",
+                    })
+            _data_context.sheets[sheet_name] = valid_rows
+        _data_context.total_rows = sum(len(rs) for rs in _data_context.sheets.values())
+
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "rows": _data_context.total_rows,
+            "skipped_rows": skipped_rows,
+            "skipped_count": len(skipped_rows),
+            "preview": _format_preview(_data_context),
+        }
 
     @app.post("/api/data/load")
     async def load_excel(request: Request):
