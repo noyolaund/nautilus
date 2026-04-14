@@ -133,30 +133,40 @@ def create_dashboard_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Excel file not found: {excel_path}")
 
         if not _suite_raw or "_data_source" not in _suite_raw:
-            raise HTTPException(status_code=400, detail="Suite has no _data_source config. Load suite first.")
+            raise HTTPException(status_code=400, detail="Suite has no _data_source config. Run Start Browser & Login first.")
 
-        _data_source_config = DataSourceConfig(**_suite_raw["_data_source"])
-
-        # Override file path with user-provided path
-        parser = ExcelParser(excel_path, _data_source_config)
-        _data_context = parser.parse()
+        try:
+            _data_source_config = DataSourceConfig(**_suite_raw["_data_source"])
+            parser = ExcelParser(excel_path, _data_source_config)
+            _data_context = parser.parse()
+        except Exception as exc:
+            import traceback
+            err_detail = f"{type(exc).__name__}: {exc}"
+            _session.logger.error("Excel parse error: %s\n%s", err_detail, traceback.format_exc())
+            raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {err_detail}")
 
         # Filter: only keep rows where column B (app_report) starts with R or P
         skipped_rows: list[dict] = []
-        for sheet_name, rows in list(_data_context.sheets.items()):
-            valid_rows = []
-            for r in rows:
-                app_report = str(r.values.get("app_report", "")).strip().upper()
-                if app_report and (app_report.startswith("R") or app_report.startswith("P")):
-                    valid_rows.append(r)
-                else:
-                    skipped_rows.append({
-                        "row": r.row_index,
-                        "app_report": app_report,
-                        "reason": "Column B must start with 'R' or 'P'",
-                    })
-            _data_context.sheets[sheet_name] = valid_rows
-        _data_context.total_rows = sum(len(rs) for rs in _data_context.sheets.values())
+        try:
+            for sheet_name, rows in list(_data_context.sheets.items()):
+                valid_rows = []
+                for r in rows:
+                    app_report = str(r.values.get("app_report", "")).strip().upper()
+                    if app_report and (app_report.startswith("R") or app_report.startswith("P")):
+                        valid_rows.append(r)
+                    else:
+                        skipped_rows.append({
+                            "row": r.row_index,
+                            "app_report": app_report,
+                            "reason": "Column B must start with 'R' or 'P'",
+                        })
+                _data_context.sheets[sheet_name] = valid_rows
+            _data_context.total_rows = sum(len(rs) for rs in _data_context.sheets.values())
+        except Exception as exc:
+            import traceback
+            err_detail = f"{type(exc).__name__}: {exc}"
+            _session.logger.error("Filter error: %s\n%s", err_detail, traceback.format_exc())
+            raise HTTPException(status_code=400, detail=f"Failed to filter rows: {err_detail}")
 
         response = {
             "rows": _data_context.total_rows,

@@ -213,9 +213,18 @@ async function loadData() {
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({excel_path: excelPath})
         });
-        const data = await res.json();
 
-        if (!res.ok) throw new Error(data.detail || 'Failed to load');
+        // Handle non-JSON responses (e.g. HTML 500 error pages)
+        let data;
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            data = await res.json();
+        } else {
+            const text = await res.text();
+            throw new Error(`Server error (${res.status}): ${text.substring(0, 200)}`);
+        }
+
+        if (!res.ok) throw new Error(data.detail || data.message || 'Failed to load');
 
         document.getElementById('data-preview').classList.remove('hidden');
         document.getElementById('data-info').innerHTML =
