@@ -228,6 +228,10 @@ class ExcelParser:
         errors: list[str],
     ) -> Any:
         """Coerce a cell value to the expected type."""
+        # Empty cells should stay empty, not become the literal string "None"
+        if value is None:
+            return "" if mapping.data_type == "string" else None
+
         try:
             if mapping.data_type == "string":
                 return str(value).strip()

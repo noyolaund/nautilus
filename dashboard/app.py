@@ -98,6 +98,14 @@ def _build_data_source_config(sheet_name: str) -> DataSourceConfig:
     })
 
 
+def _cell_has_value(val) -> bool:
+    """True if a cell actually contains data (not None, not empty, not literal 'None')."""
+    if val is None:
+        return False
+    s = str(val).strip()
+    return bool(s) and s.lower() != "none"
+
+
 def detect_path(row_values: dict) -> Optional[str]:
     """Return 'full', 'a', 'b', or None based on G (left_operand) and I (tab) columns.
 
@@ -106,8 +114,8 @@ def detect_path(row_values: dict) -> Optional[str]:
     - B path:    G is empty AND I has data
     - None:      both empty (row will be skipped)
     """
-    g = str(row_values.get("left_operand", "") or "").strip()
-    i = str(row_values.get("tab", "") or "").strip()
+    g = _cell_has_value(row_values.get("left_operand"))
+    i = _cell_has_value(row_values.get("tab"))
     if g and i:
         return "full"
     if g and not i:
