@@ -43,6 +43,37 @@ _data_context: Optional[DataContext] = None
 _data_source_config: Optional[DataSourceConfig] = None
 _suite_raw: Optional[dict] = None
 _execution_results: list[dict] = []
+_row_paths: dict[int, str] = {}  # row_index → path name (full|a|b)
+
+
+# ---------------------------------------------------------------------------
+# Path detection — choose which JSON to run for each row
+# ---------------------------------------------------------------------------
+
+PATH_TO_JSON: dict[str, str] = {
+    "full": "tests/test_cases/jde_full.json",
+    "a":    "tests/test_cases/jde_a_path.json",
+    "b":    "tests/test_cases/jde_b_path.json",
+}
+
+
+def detect_path(row_values: dict) -> Optional[str]:
+    """Return 'full', 'a', 'b', or None based on G (left_operand) and I (tab) columns.
+
+    - Full path: G has data AND I has data
+    - A path:    G has data AND I is empty
+    - B path:    G is empty AND I has data
+    - None:      both empty (row will be skipped)
+    """
+    g = str(row_values.get("left_operand", "") or "").strip()
+    i = str(row_values.get("tab", "") or "").strip()
+    if g and i:
+        return "full"
+    if g and not i:
+        return "a"
+    if not g and i:
+        return "b"
+    return None
 
 
 def create_dashboard_app() -> FastAPI:
@@ -173,20 +204,43 @@ def create_dashboard_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {err}")
 
         skipped_rows: list[dict] = []
+        global _row_paths
+        _row_paths = {}
+        path_counts = {"full": 0, "a": 0, "b": 0}
+
         for sheet_name, rows in list(_data_context.sheets.items()):
             valid_rows = []
             for r in rows:
                 app_report = str(r.values.get("app_report", "")).strip().upper()
-                if app_report and (app_report.startswith("R") or app_report.startswith("P")):
-                    valid_rows.append(r)
-                else:
+                # 1. Filter by column B prefix
+                if not app_report or not (app_report.startswith("R") or app_report.startswith("P")):
                     skipped_rows.append({
                         "row": r.row_index,
                         "app_report": app_report,
                         "reason": "Column B must start with 'R' or 'P'",
                     })
+                    continue
+                # 2. Detect which path applies
+                path = detect_path(r.values)
+                if path is None:
+                    skipped_rows.append({
+                        "row": r.row_index,
+                        "app_report": app_report,
+                        "reason": "Both column G and I are empty — no path applies",
+                    })
+                    continue
+                _row_paths[r.row_index] = path
+                path_counts[path] += 1
+                valid_rows.append(r)
             _data_context.sheets[sheet_name] = valid_rows
         _data_context.total_rows = sum(len(rs) for rs in _data_context.sheets.values())
+
+        # Build preview with path/json info per row
+        preview = _format_preview(_data_context)
+        for row in preview:
+            path = _row_paths.get(row["_row"])
+            row["_path"] = path or ""
+            row["_json"] = PATH_TO_JSON.get(path, "") if path else ""
 
         return {
             "status": "success",
@@ -194,7 +248,8 @@ def create_dashboard_app() -> FastAPI:
             "rows": _data_context.total_rows,
             "skipped_rows": skipped_rows,
             "skipped_count": len(skipped_rows),
-            "preview": _format_preview(_data_context),
+            "path_counts": path_counts,
+            "preview": preview,
         }
 
     @app.post("/api/data/load")
@@ -268,33 +323,78 @@ def create_dashboard_app() -> FastAPI:
 
     @app.post("/api/execute")
     async def execute_all():
-        """Run all iterations using the loaded data."""
+        """Run iterations: each row uses its own JSON file based on detected path."""
         global _execution_results
         if not _session.is_logged_in:
             raise HTTPException(status_code=400, detail="Not logged in. Run login first.")
         if not _data_context:
             raise HTTPException(status_code=400, detail="No data loaded. Load Excel first.")
-        if not _suite_request or len(_suite_request.test_cases) < 2:
-            raise HTTPException(status_code=400, detail="Suite needs at least 2 test cases (login + task)")
 
         _execution_results = []
 
-        # The repeatable task is the second test case
-        task_tc = _suite_request.test_cases[1]
-
-        # Resolve templates for each data row
         default_sheet = list(_data_context.sheets.keys())[0]
         all_rows = _data_context.sheets[default_sheet]
         total = len(all_rows)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="No valid rows to process")
 
         resolver = TemplateResolver(_data_context, default_sheet=default_sheet)
 
+        # Cache loaded path-suites so we don't re-read files for every row
+        path_suites: dict[str, TestSuiteRequest] = {}
+
+        def _load_path_suite(path_key: str) -> Optional[TestSuiteRequest]:
+            if path_key in path_suites:
+                return path_suites[path_key]
+            json_path = PATH_TO_JSON.get(path_key)
+            if not json_path or not Path(json_path).exists():
+                return None
+            try:
+                raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
+                raw.pop("_data_source", None)
+                suite = TestSuiteRequest(**raw)
+                path_suites[path_key] = suite
+                return suite
+            except Exception as exc:
+                _session.logger.error("Failed to load %s: %s", json_path, exc)
+                return None
+
         for i, row in enumerate(all_rows, 1):
-            # Resolve templates for this row
-            resolved_suite = resolver._resolve_suite_for_row(_suite_request, row, i)
-            resolved_tc = resolved_suite.test_cases[1] if len(resolved_suite.test_cases) > 1 else resolved_suite.test_cases[0]
+            path_key = _row_paths.get(row.row_index)
+            json_file = PATH_TO_JSON.get(path_key, "") if path_key else ""
+
+            path_suite = _load_path_suite(path_key) if path_key else None
+            if not path_suite or not path_suite.test_cases:
+                _execution_results.append({
+                    "iteration": i,
+                    "total": total,
+                    "test_id": "N/A",
+                    "name": f"Row {row.row_index} ({row.values.get('app_report', '?')})",
+                    "status": "fail",
+                    "duration_ms": 0,
+                    "tokens": 0,
+                    "screenshot": "",
+                    "path": path_key or "?",
+                    "json_file": json_file,
+                    "steps": [{
+                        "step_id": "N/A",
+                        "name": "Load path JSON",
+                        "status": "fail",
+                        "duration_ms": 0,
+                        "error": f"Could not load JSON for path '{path_key}': {json_file}",
+                        "selector": None,
+                    }],
+                })
+                continue
+
+            # Resolve {{data.xxx}} templates with this row's data
+            resolved_suite = resolver._resolve_suite_for_row(path_suite, row, i)
+            resolved_tc = resolved_suite.test_cases[0]
 
             result = await _session.execute_iteration(resolved_tc, i, total)
+            # Tag the result with which path/json was used
+            result["path"] = path_key
+            result["json_file"] = json_file
             _execution_results.append(result)
 
         # Generate report

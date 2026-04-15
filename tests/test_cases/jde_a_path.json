@@ -140,9 +140,9 @@
             "value": "jnoyolam",
             "sensitive": true
           },
-          "timeout_ms": 15000,
+          "timeout_ms": 30000,
           "retry_count": 2,
-          "pre_wait_ms": 1000,
+          "pre_wait_ms": 2000,
           "screenshot_on_failure": true
         },
         {
@@ -154,12 +154,12 @@
             "selector_strategy": "ai"
           },
           "data": {
-            "value": "AmdsamI8!",
+            "value": "AmdsamI8",
             "sensitive": true
           },
-          "timeout_ms": 15000,
+          "timeout_ms": 30000,
           "retry_count": 2,
-          "pre_wait_ms": 1000,
+          "pre_wait_ms": 2000,
           "screenshot_on_failure": true
         },
         {
@@ -177,6 +177,13 @@
         },
         {
           "step_id": "S005",
+          "name": "Screenshot order confirmation",
+          "action": "screenshot",
+          "timeout_ms": 10000,
+          "retry_count": 0
+        },
+        {
+          "step_id": "S006",
           "name": "Login Assert",
           "action": "assert_visible",
           "target": {
@@ -187,13 +194,6 @@
           "retry_count": 2,
           "pre_wait_ms": 2000,
           "screenshot_on_failure": true
-        },
-        {
-          "step_id": "S006",
-          "name": "Screenshot order confirmation",
-          "action": "screenshot",
-          "timeout_ms": 10000,
-          "retry_count": 0
         },
         {
           "step_id": "S007",

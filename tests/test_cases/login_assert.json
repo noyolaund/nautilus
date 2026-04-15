@@ -112,7 +112,7 @@
             "selector_strategy": "ai"
           },
           "data": {
-            "value": "AmdsamI8",
+            "value": "AmdsamI8!",
             "sensitive": true
           },
           "timeout_ms": 30000,

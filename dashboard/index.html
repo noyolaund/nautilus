@@ -253,32 +253,48 @@ async function loadData() {
         if (!res.ok) throw new Error(data.detail || data.message || 'Failed to load');
 
         document.getElementById('data-preview').classList.remove('hidden');
+        const pc = data.path_counts || {full:0, a:0, b:0};
         document.getElementById('data-info').innerHTML =
             `<strong>${data.rows} valid rows</strong> to be processed` +
-            (data.errors ? ` <span style="color:var(--fail)">(${data.errors.length} warnings)</span>` : '');
+            ` &nbsp;·&nbsp; <span style="color:var(--accent)">Full: ${pc.full}</span>` +
+            ` &nbsp;·&nbsp; <span style="color:var(--accent)">A: ${pc.a}</span>` +
+            ` &nbsp;·&nbsp; <span style="color:var(--accent)">B: ${pc.b}</span>` +
+            (data.errors ? ` &nbsp;·&nbsp; <span style="color:var(--fail)">(${data.errors.length} warnings)</span>` : '');
 
-        // Show skipped rows (those that don't start with R or P)
+        // Show skipped rows
         const skippedInfo = document.getElementById('skipped-info');
         if (data.skipped_count > 0) {
             skippedInfo.classList.remove('hidden');
             const skippedList = data.skipped_rows.slice(0, 5).map(s =>
-                `Row ${s.row}: "${s.app_report}"`
-            ).join(', ');
-            const more = data.skipped_count > 5 ? ` and ${data.skipped_count - 5} more` : '';
-            skippedInfo.innerHTML = `<strong>${data.skipped_count} rows skipped</strong> (column B doesn't start with R or P): ${skippedList}${more}`;
+                `Row ${s.row} (${s.app_report || 'empty'}): ${s.reason}`
+            ).join('<br>');
+            const more = data.skipped_count > 5 ? `<br>...and ${data.skipped_count - 5} more` : '';
+            skippedInfo.innerHTML = `<strong>${data.skipped_count} rows skipped:</strong><br>${skippedList}${more}`;
         } else {
             skippedInfo.classList.add('hidden');
         }
 
-        // Build preview table — show only App / Report column
+        // Build preview table — App / Report + Path + JSON file
         const preview = data.preview || [];
         const thead = document.querySelector('#data-table thead');
         const tbody = document.querySelector('#data-table tbody');
         if (preview.length > 0) {
-            thead.innerHTML = '<tr><th style="width:50px">#</th><th>App / Report</th></tr>';
-            tbody.innerHTML = preview.map((row, i) =>
-                `<tr><td>${i+1}</td><td>${row.app_report || ''}</td></tr>`
-            ).join('');
+            thead.innerHTML = '<tr>' +
+                '<th style="width:50px">#</th>' +
+                '<th>App / Report</th>' +
+                '<th>Path</th>' +
+                '<th>JSON file</th>' +
+                '</tr>';
+            tbody.innerHTML = preview.map((row, i) => {
+                const pathLabel = {full:'Full', a:'A path', b:'B path'}[row._path] || '?';
+                const pathColor = row._path ? 'var(--accent)' : 'var(--muted)';
+                return `<tr>
+                    <td>${i+1}</td>
+                    <td>${row.app_report || ''}</td>
+                    <td><span class="badge" style="background:var(--accent-bg);color:${pathColor}">${pathLabel}</span></td>
+                    <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${row._json || ''}</td>
+                </tr>`;
+            }).join('');
         } else {
             thead.innerHTML = '';
             tbody.innerHTML = '';
@@ -335,15 +351,17 @@ function showResults(data) {
     `;
 
     const thead = document.querySelector('#results-table thead');
-    thead.innerHTML = '<tr><th>#</th><th>Name</th><th>Status</th><th>Duration</th><th>Tokens</th><th>Details</th></tr>';
+    thead.innerHTML = '<tr><th>#</th><th>Name</th><th>Path</th><th>Status</th><th>Duration</th><th>Tokens</th><th>Details</th></tr>';
 
     const tbody = document.querySelector('#results-table tbody');
     tbody.innerHTML = (data.results || []).map(r => {
         const badge = r.status === 'pass' ? 'badge-pass' : 'badge-fail';
+        const pathLabel = {full:'Full', a:'A path', b:'B path'}[r.path] || (r.path || '?');
         const errors = (r.steps || []).filter(s => s.error).map(s => s.error).join('; ');
         return `<tr>
             <td>${r.iteration}</td>
             <td>${r.name}</td>
+            <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${pathLabel}</span></td>
             <td><span class="badge ${badge}">${r.status.toUpperCase()}</span></td>
             <td>${(r.duration_ms/1000).toFixed(1)}s</td>
             <td>${r.tokens}</td>
