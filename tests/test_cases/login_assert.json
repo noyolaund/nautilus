@@ -8,61 +8,6 @@
   "llm_model": "claude-sonnet-4-20250514",
   "parallel": false,
 
-  "_data_source": {
-    "source_id": "report_versions",
-    "source_type": "excel_sharepoint",
-    "sharepoint": {
-      "site_url": "e1w0000036.jnj.com:9220/jde/E1Menu.maf",
-      "file_path": "Shared Documents/Report_Versions.xlsx",
-      "auth_method": "client_credentials",
-      "tenant_id": null,
-      "client_id": null,
-      "client_secret": null
-    },
-    "excel": {
-      "sheets": [
-        {
-          "sheet_name": "Reports",
-          "header_row": 1,
-          "data_start_row": 2,
-          "column_mappings": [
-            {
-              "column": "A",
-              "variable_name": "app_report",
-              "data_type": "string",
-              "required": true
-            },
-            {
-              "column": "B",
-              "variable_name": "current_version",
-              "data_type": "string",
-              "required": true
-            },
-            {
-              "column": "C",
-              "variable_name": "new_version",
-              "data_type": "string",
-              "required": true
-            },
-            {
-              "column": "D",
-              "variable_name": "object_name",
-              "data_type": "string",
-              "required": true
-            }
-          ]
-        }
-      ]
-    },
-    "iteration": {
-      "mode": "all_rows",
-      "sheet_name": "Reports",
-      "max_rows": 100
-    },
-    "cache_downloaded_file": true,
-    "cache_dir": "data_provider/cache"
-  },
-
   "test_cases": [
     {
       "test_id": "TC-login_assert",

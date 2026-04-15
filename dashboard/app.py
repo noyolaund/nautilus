@@ -41,9 +41,9 @@ _session = SessionManager()
 _suite_request: Optional[TestSuiteRequest] = None
 _data_context: Optional[DataContext] = None
 _data_source_config: Optional[DataSourceConfig] = None
-_suite_raw: Optional[dict] = None
 _execution_results: list[dict] = []
 _row_paths: dict[int, str] = {}  # row_index → path name (full|a|b)
+_login_completed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +55,47 @@ PATH_TO_JSON: dict[str, str] = {
     "a":    "tests/test_cases/jde_a_path.json",
     "b":    "tests/test_cases/jde_b_path.json",
 }
+
+# Excel column mapping — fixed business contract for this workflow
+#   A=user_story, B=app_report, C=current_version, D=new_version,
+#   E=current_version_title, F=new_version_title,
+#   G=left_operand (for path detection),
+#   H=data_new, I=tab (for path detection),
+#   J=option_number, K=processing_new
+EXCEL_COLUMN_MAPPINGS: list[dict] = [
+    {"column": "A", "variable_name": "user_story",           "data_type": "string", "required": False},
+    {"column": "B", "variable_name": "app_report",           "data_type": "string", "required": True},
+    {"column": "C", "variable_name": "current_version",      "data_type": "string", "required": True},
+    {"column": "D", "variable_name": "new_version",          "data_type": "string", "required": True},
+    {"column": "E", "variable_name": "current_version_title","data_type": "string", "required": False},
+    {"column": "F", "variable_name": "new_version_title",    "data_type": "string", "required": True},
+    {"column": "G", "variable_name": "left_operand",         "data_type": "string", "required": False},
+    {"column": "H", "variable_name": "data_new",             "data_type": "string", "required": False},
+    {"column": "I", "variable_name": "tab",                  "data_type": "string", "required": False},
+    {"column": "J", "variable_name": "option_number",        "data_type": "string", "required": False},
+    {"column": "K", "variable_name": "processing_new",       "data_type": "string", "required": False},
+]
+
+
+def _build_data_source_config(sheet_name: str) -> DataSourceConfig:
+    """Build the Excel DataSourceConfig from the fixed dashboard contract."""
+    return DataSourceConfig(**{
+        "source_id": "jde_report_versions",
+        "source_type": "excel_local",
+        "excel": {
+            "sheets": [{
+                "sheet_name": sheet_name,
+                "header_row": 1,
+                "data_start_row": 2,
+                "column_mappings": EXCEL_COLUMN_MAPPINGS,
+            }]
+        },
+        "iteration": {
+            "mode": "all_rows",
+            "sheet_name": sheet_name,
+            "max_rows": 500,
+        },
+    })
 
 
 def detect_path(row_values: dict) -> Optional[str]:
@@ -106,32 +147,23 @@ def create_dashboard_app() -> FastAPI:
 
     @app.post("/api/session/login")
     async def login(request: Request):
-        """Run login_assert.json — login success is determined by the assert_visible step."""
-        global _suite_request, _suite_raw
+        """Run login_assert.json — login only, no Excel data involved."""
+        global _suite_request, _login_completed
 
-        # 1. Load the login suite (runs the login flow, ends with assert_visible)
         login_path = "tests/test_cases/login_assert.json"
         if not Path(login_path).exists():
             raise HTTPException(status_code=400, detail=f"Login suite not found: {login_path}")
 
         login_raw = json.loads(Path(login_path).read_text(encoding="utf-8"))
+        # Login suite has no _data_source by design; strip it if present anyway
         login_raw.pop("_data_source", None)
+
         login_suite = TestSuiteRequest(**login_raw)
-
-        # Force headless=False as required
         login_suite.headless = False
+        _suite_request = login_suite
 
-        # 2. Load the main suite for the iteration phase (keeps _data_source for Excel config)
-        main_path = "tests/test_cases/jde_copy_report_version.json"
-        if Path(main_path).exists():
-            main_raw = json.loads(Path(main_path).read_text(encoding="utf-8"))
-            _suite_raw = main_raw.copy()
-            main_raw.pop("_data_source", None)
-            _suite_request = TestSuiteRequest(**main_raw)
-            _suite_request.headless = False
-
-        # 3. Execute the login flow — login success = assert_visible step passes
         result = await _session.run_login(login_suite)
+        _login_completed = bool(result.get("logged_in"))
         return result
 
     @app.post("/api/session/stop")
@@ -164,7 +196,7 @@ def create_dashboard_app() -> FastAPI:
         if not file.filename.lower().endswith(".xlsx"):
             raise HTTPException(status_code=400, detail="Only .xlsx files accepted")
 
-        if not _suite_raw or "_data_source" not in _suite_raw:
+        if not _login_completed:
             raise HTTPException(status_code=400, detail="Run Start Browser & Login first.")
 
         # Save uploaded file to the run dir (or a temp location)
@@ -182,19 +214,9 @@ def create_dashboard_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Failed to save upload: {exc}")
 
-        # Override sheet name from user input in the data source config
-        ds_raw = json.loads(json.dumps(_suite_raw["_data_source"]))  # deep copy
+        # Parse and filter using the dashboard's fixed column mapping
         try:
-            for sheet_cfg in ds_raw["excel"]["sheets"]:
-                sheet_cfg["sheet_name"] = sheet_name
-            if "iteration" in ds_raw and ds_raw["iteration"] is not None:
-                ds_raw["iteration"]["sheet_name"] = sheet_name
-        except Exception:
-            pass
-
-        # Parse and filter
-        try:
-            _data_source_config = DataSourceConfig(**ds_raw)
+            _data_source_config = _build_data_source_config(sheet_name.strip() or "Sheet1")
             parser = ExcelParser(str(saved_path), _data_source_config)
             _data_context = parser.parse()
         except Exception as exc:
@@ -251,66 +273,6 @@ def create_dashboard_app() -> FastAPI:
             "path_counts": path_counts,
             "preview": preview,
         }
-
-    @app.post("/api/data/load")
-    async def load_excel(request: Request):
-        """Parse the Excel file and return a preview of the rows."""
-        global _data_context, _data_source_config
-        body = await request.json()
-        excel_path = body.get("excel_path", "")
-
-        if not excel_path or not Path(excel_path).exists():
-            raise HTTPException(status_code=400, detail=f"Excel file not found: {excel_path}")
-
-        if not _suite_raw or "_data_source" not in _suite_raw:
-            raise HTTPException(status_code=400, detail="Suite has no _data_source config. Run Start Browser & Login first.")
-
-        try:
-            _data_source_config = DataSourceConfig(**_suite_raw["_data_source"])
-            parser = ExcelParser(excel_path, _data_source_config)
-            _data_context = parser.parse()
-        except Exception as exc:
-            import traceback
-            err_detail = f"{type(exc).__name__}: {exc}"
-            _session.logger.error("Excel parse error: %s\n%s", err_detail, traceback.format_exc())
-            raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {err_detail}")
-
-        # Filter: only keep rows where column B (app_report) starts with R or P
-        skipped_rows: list[dict] = []
-        try:
-            for sheet_name, rows in list(_data_context.sheets.items()):
-                valid_rows = []
-                for r in rows:
-                    app_report = str(r.values.get("app_report", "")).strip().upper()
-                    if app_report and (app_report.startswith("R") or app_report.startswith("P")):
-                        valid_rows.append(r)
-                    else:
-                        skipped_rows.append({
-                            "row": r.row_index,
-                            "app_report": app_report,
-                            "reason": "Column B must start with 'R' or 'P'",
-                        })
-                _data_context.sheets[sheet_name] = valid_rows
-            _data_context.total_rows = sum(len(rs) for rs in _data_context.sheets.values())
-        except Exception as exc:
-            import traceback
-            err_detail = f"{type(exc).__name__}: {exc}"
-            _session.logger.error("Filter error: %s\n%s", err_detail, traceback.format_exc())
-            raise HTTPException(status_code=400, detail=f"Failed to filter rows: {err_detail}")
-
-        response = {
-            "rows": _data_context.total_rows,
-            "skipped_rows": skipped_rows,
-            "skipped_count": len(skipped_rows),
-            "preview": _format_preview(_data_context),
-        }
-
-        if _data_context.validation_errors:
-            response["status"] = "warning"
-            response["errors"] = _data_context.validation_errors[:10]
-        else:
-            response["status"] = "success"
-        return response
 
     @app.get("/api/data/preview")
     async def data_preview():
