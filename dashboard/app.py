@@ -242,6 +242,14 @@ def create_dashboard_app() -> FastAPI:
             valid_rows = []
             for r in rows:
                 app_report = str(r.values.get("app_report", "")).strip().upper()
+                # Debug: log what the parser extracted for each row
+                _session.logger.info(
+                    "Row %d: app_report=%r  G(left_operand)=%r  I(tab)=%r",
+                    r.row_index,
+                    r.values.get("app_report"),
+                    r.values.get("left_operand"),
+                    r.values.get("tab"),
+                )
                 # 1. Filter by column B prefix
                 if not app_report or not (app_report.startswith("R") or app_report.startswith("P")):
                     skipped_rows.append({
@@ -271,6 +279,9 @@ def create_dashboard_app() -> FastAPI:
             path = _row_paths.get(row["_row"])
             row["_path"] = path or ""
             row["_json"] = PATH_TO_JSON.get(path, "") if path else ""
+            # Expose G/I values for debugging
+            row["_col_g"] = row.get("left_operand", "")
+            row["_col_i"] = row.get("tab", "")
 
         return {
             "status": "success",

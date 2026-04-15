@@ -282,15 +282,21 @@ async function loadData() {
             thead.innerHTML = '<tr>' +
                 '<th style="width:50px">#</th>' +
                 '<th>App / Report</th>' +
+                '<th>Col G (left_operand)</th>' +
+                '<th>Col I (tab)</th>' +
                 '<th>Path</th>' +
                 '<th>JSON file</th>' +
                 '</tr>';
             tbody.innerHTML = preview.map((row, i) => {
                 const pathLabel = {full:'Full', a:'A path', b:'B path'}[row._path] || '?';
                 const pathColor = row._path ? 'var(--accent)' : 'var(--muted)';
+                const g = row._col_g === '' || row._col_g == null ? '<em style="color:var(--muted)">empty</em>' : row._col_g;
+                const ivi = row._col_i === '' || row._col_i == null ? '<em style="color:var(--muted)">empty</em>' : row._col_i;
                 return `<tr>
                     <td>${i+1}</td>
                     <td>${row.app_report || ''}</td>
+                    <td style="font-size:.75rem">${g}</td>
+                    <td style="font-size:.75rem">${ivi}</td>
                     <td><span class="badge" style="background:var(--accent-bg);color:${pathColor}">${pathLabel}</span></td>
                     <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${row._json || ''}</td>
                 </tr>`;
