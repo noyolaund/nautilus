@@ -225,24 +225,85 @@ curl http://localhost:8000/report/{run_id} -o report.html
 | `type` | Type text into field | Yes | Yes (text) |
 | `select` | Select dropdown option | Yes | Yes (option) |
 | `wait` | Wait for element visible | Yes | No |
-| `assert_visible` | Assert element is visible | Yes | No |
+| `assert_visible` | Assert element/text is visible (also searches iframes for plain text) | Yes | No |
 | `assert_text` | Assert element contains text | Yes | Yes (expected) |
 | `assert_value` | Assert element value | Yes | Yes (expected) |
 | `extract` | Extract text from element | Yes | No |
+| `key_press` | Press a key or key combo (`Enter`, `Ctrl+F8`, `Tab`, etc.) — optionally scoped to a target element | Optional | Yes (key combo) |
+| `check_error` | Check for an error banner on the page (walks all iframes). Fails the iteration with the extracted error text if found. | Yes | No |
 | `screenshot` | Capture page screenshot | No | No |
 | `custom` | Custom AI action | Yes | Optional |
+
+#### `key_press` — examples
+
+```json
+{ "action": "key_press", "data": { "value": "Enter" } }
+{ "action": "key_press", "data": { "value": "Control+Alt+I" } }
+{ "action": "key_press", "data": { "value": "Tab" },
+  "target": { "description": "the search input", "selector": "input[name='q']", "selector_strategy": "css" } }
+```
+
+Shorthand aliases auto-normalize to Playwright key names: `Ctrl` → `Control`, `Cmd/Win` → `Meta`, `Esc` → `Escape`, `Del` → `Delete`, `Up/Down/Left/Right` → `Arrow*`, etc.
+
+#### `check_error` — examples
+
+```json
+{
+  "step_id": "S020",
+  "name": "Detect JDE error banner",
+  "action": "check_error",
+  "target": {
+    "description": "JDE error message container",
+    "selector": "#INYFEContent",
+    "selector_strategy": "css"
+  },
+  "timeout_ms": 3000,
+  "screenshot_on_failure": true
+}
+```
+
+- **No error present** → step passes silently, execution continues
+- **Error found with text** → step fails, iteration stops (unless `continue_on_failure: true`), and the extracted error text is captured into the step's `error_message` and shown in the HTML report
+- Walks the main page plus every iframe automatically — no need to specify iframe
 
 ### Selector Strategies
 
 | Strategy | When to use |
 |----------|------------|
-| `ai` | **Default.** Stagehand resolves via LLM. Best for SAP. |
-| `css` | Stable CSS selectors (data-testid, classes) |
-| `xpath` | Complex DOM traversal |
+| `ai` | **Default.** LLM (Stagehand / direct OpenAI-compatible API) resolves via page context + description. Best for SAP, unstable DOMs. |
+| `css` | Stable CSS selectors (id, data-testid, classes) — fastest, 0 tokens |
+| `xpath` | Complex DOM traversal (label-next-to-input patterns in SAP/JDE) |
 | `text` | Match by visible text |
 | `role` | ARIA role matching |
 | `data_attr` | Custom data attributes |
 | `ui5_stable` | SAP `data-ui5-stable` attribute |
+
+#### Iframe support
+
+Add `iframe` to the `target` to scope any selector strategy inside a frame — works with `css`, `xpath`, `ai`, and all fallbacks:
+
+```json
+"target": {
+  "description": "Batch Application input",
+  "selector": "#C0_11",
+  "selector_strategy": "css",
+  "iframe": "iframe#e1menuAppIframe"
+}
+```
+
+Multiple comma-separated selectors are tried in order if the iframe name isn't known.
+
+#### Element resolution chain (when `selector_strategy: "ai"`)
+
+When the LLM's CSS selector doesn't match, the engine automatically tries additional strategies in order:
+
+1. Raw LLM selector(s) — `selectors` array, plus `selector`
+2. `get_by_label(...)` — for inputs with `<label for="...">`
+3. `get_by_placeholder(...)` — for fields with placeholder text
+4. `get_by_role("button"|"link"|"textbox", name=...)` — accessible name matching
+5. `input[value="..."]` — for submit buttons (`<input type="submit" value="Sign In">`)
+6. `get_by_text(...)` — plain text substring match
+7. **Adjacent-input fallback** — finds a label text, then the next sibling / parent's next sibling / sibling `<td>` that contains an `<input>` (SAP/JDE label-next-to-input pattern)
 
 ### Supported Platforms
 
@@ -250,10 +311,11 @@ curl http://localhost:8000/report/{run_id} -o report.html
 |----------|--------------|
 | `sap_fiori` | 60s timeout, ui5-stable fallback, longer DOM settle |
 | `sap_webgui` | 45s timeout, frame handling |
+| `jde_e1` | 45s timeout, Control-ID selectors, iframe handling (`e1menuAppIframe`) |
 | `salesforce` | 45s timeout, Lightning components |
 | `dynamics_365` | 40s timeout |
 | `generic_web` | 30s timeout, standard Playwright |
-| `custom` | Configurable |
+| `custom` or any string | Configurable — unknown platform names default to 30s timeout |
 
 ---
 

@@ -29,6 +29,7 @@ class ActionType(str, Enum):
     ASSERT_VALUE = "assert_value"
     EXTRACT = "extract"
     KEY_PRESS = "key_press"
+    CHECK_ERROR = "check_error"
     SCREENSHOT = "screenshot"
     CUSTOM = "custom"
 
@@ -151,6 +152,7 @@ class TestStep(BaseModel):
             ActionType.CLICK, ActionType.TYPE, ActionType.SELECT,
             ActionType.WAIT, ActionType.ASSERT_VISIBLE, ActionType.ASSERT_TEXT,
             ActionType.ASSERT_VALUE, ActionType.EXTRACT, ActionType.CUSTOM,
+            ActionType.CHECK_ERROR,
         }
         actions_need_data = {
             ActionType.NAVIGATE, ActionType.TYPE, ActionType.SELECT,

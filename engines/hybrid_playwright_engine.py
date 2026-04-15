@@ -605,6 +605,41 @@ class HybridPlaywrightEngine(BaseEngine):
                     else:
                         await page.keyboard.press(key_combo)
 
+                case ActionType.CHECK_ERROR:
+                    # Detect JDE error messages. Element present with text = iteration fails.
+                    err_selector = step.target.selector  # type: ignore[union-attr]
+
+                    check_ctxs = [page]
+                    for frame in page.frames:
+                        check_ctxs.append(frame)
+
+                    error_text = None
+                    for ctx in check_ctxs:
+                        try:
+                            err_locator = ctx.locator(err_selector) if err_selector else None
+                            if err_locator is None:
+                                continue
+                            count = await err_locator.count()
+                            if count > 0:
+                                first = err_locator.first
+                                is_visible = await first.is_visible(timeout=1000)
+                                if is_visible:
+                                    text = (await first.text_content()) or ""
+                                    text = text.strip()
+                                    if text:
+                                        error_text = text
+                                        break
+                        except Exception:
+                            continue
+
+                    if error_text:
+                        status = StepStatus.FAIL
+                        error_message = f"JDE error detected: {error_text[:500]}"
+                        resolved_selector = err_selector
+                        self.logger.error("CHECK_ERROR triggered: %s", error_text[:200])
+                    else:
+                        resolved_selector = f"no-error({err_selector})"
+
                 case ActionType.SCREENSHOT:
                     path = await self._take_screenshot(
                         page, test_case.test_id, step.step_id,
