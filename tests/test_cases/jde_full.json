@@ -124,16 +124,16 @@
             "description": "in the 'Submit Job' text",
             "selector_strategy": "ai"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S008",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
-          "timeout_ms": 10000,
+          "timeout_ms": 1000,
           "retry_count": 0
         },
         {
@@ -150,9 +150,9 @@
             "value": "R4311Z1I",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
@@ -163,9 +163,9 @@
             "value": "Control+Alt+I",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
@@ -182,9 +182,9 @@
             "value": "EDOES011",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
@@ -195,9 +195,9 @@
             "value": "Enter",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
@@ -210,9 +210,9 @@
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
@@ -225,9 +225,9 @@
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
@@ -241,12 +241,12 @@
             "iframe": "iframe#e1menuAppIframe"
           },
           "data": {
-            "value": "DPSES0115",
+            "value": "DPSES0116",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
@@ -260,16 +260,30 @@
             "iframe": "iframe#e1menuAppIframe"
           },
           "data": {
-            "value": "DPS5 - PO Inbound - Mitek - JDEPOASN",
+            "value": "DPS6 - PO Inbound - Mitek - JDEPOASN",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S017",
+          "name": "Check for JDE Errors",
+          "action": "check_error",
+          "target": {
+            "description": "JDE Error Banner",
+            "selector": "#INYFEContent",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S018",
           "name": "Click in the copy button",
           "action": "click",
           "target": {
@@ -278,13 +292,13 @@
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S018",
+          "step_id": "S019",
           "name": "Enter Current version",
           "action": "type",
           "target": {
@@ -294,33 +308,219 @@
             "iframe": "iframe#e1menuAppIframe"
           },
           "data": {
-            "value": "DPSES0115",
+            "value": "DPSES0116",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S019",
+          "step_id": "S020",
           "name": "Enter Current version",
           "action": "key_press",
           "data": {
             "value": "Enter",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S020",
+          "step_id": "S021",
+          "name": "Marck the checkbox",
+          "action": "click",
+          "target": {
+            "description": "in the 'Select All' checkbox",
+            "selector": "#selectAll0_1",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S022",
+          "name": "Open the Raw Menu",
+          "action": "click",
+          "target": {
+            "description": "Row menu",
+            "selector": "#C0_58",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S023",
+          "name": "Select 'Data Selection'",
+          "action": "click",
+          "target": {
+            "description": "in the 'Data Selection' option",
+            "selector": "#HEC0_127",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S024",
+          "name": "Open Right Operand dropdown menu",
+          "action": "select",
+          "target": {
+            "description": "dropdown menu",
+            "selector": "#RightOperand3",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+              "value": "Literal"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S025",
+          "name": "Enter Current version",
+          "action": "type",
+          "target": {
+            "description": "in the 'Batch Application' field",
+            "selector": "#LITtf",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "ESD501",
+            "sensitive": true
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S026",
+          "name": "Select 'Data Selection'",
+          "action": "click",
+          "target": {
+            "description": "in the 'Data Selection' option",
+            "selector": "#hc_Select",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S027",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
-          "timeout_ms": 10000,
-          "retry_count": 0
+          "timeout_ms": 1000,
+          "retry_count": 0,
+          "pre_wait_ms": 200
+        },
+        {
+          "step_id": "S028",
+          "name": "Select 'Data Selection'",
+          "action": "click",
+          "target": {
+            "description": "in the 'Data Selection' option",
+            "selector": "#hc_Select",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S029",
+          "name": "Open the Raw Menu",
+          "action": "click",
+          "target": {
+            "description": "Row menu",
+            "selector": "#C0_58",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S030",
+          "name": "Select 'Processing Options'",
+          "action": "click",
+          "target": {
+            "description": "in the 'Processing Options' option",
+            "selector": "#HE0_118",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S031",
+          "name": "Enter a version",
+          "action": "type",
+          "target": {
+            "description": "in the 'P. O. Entry' field",
+            "selector": "#PO1T0",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "EDOBE017",
+            "sensitive": true
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S032",
+          "name": "Click OK'",
+          "action": "click",
+          "target": {
+            "description": "Click Ok button",
+            "selector": "#hc_Select",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        
+        {
+          "step_id": "S033",
+          "name": "Screenshot order confirmation",
+          "action": "screenshot",
+          "timeout_ms": 1000,
+          "retry_count": 0,
+          "pre_wait_ms": 200
         }
       ],
       "expected_result": "Version is created successfully with title 'DPS'"

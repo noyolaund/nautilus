@@ -27,7 +27,7 @@
             "value": "http://e1w0000036.jnj.com:9222/jde/E1Menu.maf",
             "sensitive": false
           },
-          "timeout_ms": 45000,
+          "timeout_ms": 10000,
           "retry_count": 2,
           "pre_wait_ms": 0
         },
@@ -43,9 +43,9 @@
             "value": "jnoyolam",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 3000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 500,
           "screenshot_on_failure": true
         },
         {
@@ -60,9 +60,9 @@
             "value": "AmdsamI8!",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 3000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 500,
           "screenshot_on_failure": true
         },
         {
@@ -73,16 +73,16 @@
             "description": "the 'Sign In' button",
             "selector_strategy": "ai"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 3000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 500,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S005",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
-          "timeout_ms": 10000,
+          "timeout_ms": 5000,
           "retry_count": 0
         },
         {
@@ -93,9 +93,9 @@
             "description": "Welcome!",
             "selector_strategy": "ai"
           },
-          "timeout_ms": 10000,
+          "timeout_ms": 1000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 500,
           "screenshot_on_failure": true
         }
       ],

@@ -8,103 +8,6 @@
   "llm_model": "claude-sonnet-4-20250514",
   "parallel": false,
 
-  "_data_source": {
-    "source_id": "report_versions",
-    "source_type": "excel_sharepoint",
-    "sharepoint": {
-      "site_url": "e1w0000036.jnj.com:9220/jde/E1Menu.maf",
-      "file_path": "Shared Documents/Report_Versions.xlsx",
-      "auth_method": "client_credentials",
-      "tenant_id": null,
-      "client_id": null,
-      "client_secret": null
-    },
-    "excel": {
-      "sheets": [
-        {
-          "sheet_name": "Sheet1",
-          "header_row": 1,
-          "data_start_row": 2,
-          "column_mappings": [
-            {
-              "column": "A",
-              "variable_name": "user_story",
-              "data_type": "string",
-              "required": false
-            },
-            {
-              "column": "B",
-              "variable_name": "app_report",
-              "data_type": "string",
-              "required": true
-            },
-            {
-              "column": "C",
-              "variable_name": "current_version",
-              "data_type": "string",
-              "required": true
-            },
-            {
-              "column": "D",
-              "variable_name": "new_version",
-              "data_type": "string",
-              "required": true
-            },
-            {
-              "column": "E",
-              "variable_name": "current_version_title",
-              "data_type": "string",
-              "required": false
-            },
-            {
-              "column": "F",
-              "variable_name": "new_version_title",
-              "data_type": "string",
-              "required": true
-            },
-            {
-              "column": "G",
-              "variable_name": "left_operand",
-              "data_type": "string",
-              "required": false
-            },
-            {
-              "column": "H",
-              "variable_name": "data_new",
-              "data_type": "string",
-              "required": false
-            },
-            {
-              "column": "I",
-              "variable_name": "tab",
-              "data_type": "string",
-              "required": false
-            },
-            {
-              "column": "J",
-              "variable_name": "option_number",
-              "data_type": "string",
-              "required": false
-            },
-            {
-              "column": "K",
-              "variable_name": "processing_new",
-              "data_type": "string",
-              "required": false
-            }
-          ]
-        }
-      ]
-    },
-    "iteration": {
-      "mode": "all_rows",
-      "sheet_name": "Sheet1",
-      "max_rows": 100
-    },
-    "cache_downloaded_file": true,
-    "cache_dir": "data_provider/cache"
-  },
-
   "test_cases": [
     {
       "test_id": "TC-JDE-CPY",
@@ -124,7 +27,7 @@
             "value": "http://e1w0000036.jnj.com:9222/jde/E1Menu.maf",
             "sensitive": false
           },
-          "timeout_ms": 45000,
+          "timeout_ms": 5000,
           "retry_count": 2,
           "pre_wait_ms": 0
         },
@@ -140,9 +43,9 @@
             "value": "jnoyolam",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -157,9 +60,9 @@
             "value": "AmdsamI8!",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -170,16 +73,16 @@
             "description": "the 'Sign In' button",
             "selector_strategy": "ai"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S005",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
-          "timeout_ms": 10000,
+          "timeout_ms": 2000,
           "retry_count": 0
         },
         {
@@ -190,9 +93,9 @@
             "description": "Welcome!",
             "selector_strategy": "ai"
           },
-          "timeout_ms": 10000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -203,16 +106,16 @@
             "description": "in the 'Submit Job' text",
             "selector_strategy": "ai"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S008",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
-          "timeout_ms": 10000,
+          "timeout_ms": 2000,
           "retry_count": 0
         },
         {
@@ -229,9 +132,9 @@
             "value": "R4311Z1I",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -242,9 +145,9 @@
             "value": "Control+Alt+I",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -258,12 +161,12 @@
             "iframe": "iframe#e1menuAppIframe"
           },
           "data": {
-            "value": "EDOES011",
+            "value": "DPSES0112",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -274,9 +177,9 @@
             "value": "Enter",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
@@ -289,131 +192,188 @@
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S014",
-          "name": "Click in the copy button",
+          "name": "Open the Raw Menu",
           "action": "click",
           "target": {
-            "description": "in the 'Copy' button",
-            "selector": "#hc_Copy",
+            "description": "Row menu",
+            "selector": "#C0_58",
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S015",
-          "name": "Enter New version",
-          "action": "type",
+          "name": "Select 'Data Selection'",
+          "action": "click",
           "target": {
-            "description": "in the 'Batch Application' field",
-            "selector": "#C0_17",
+            "description": "in the 'Data Selection' option",
+            "selector": "#HEC0_127",
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
-          "data": {
-            "value": "DPSES0115",
-            "sensitive": true
-          },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S016",
-          "name": "Enter Version Title",
-          "action": "type",
+          "name": "Open Right Operand dropdown menu",
+          "action": "select",
           "target": {
-            "description": "in the 'Batch Application' field",
-            "selector": "#C0_21",
+            "description": "dropdown menu",
+            "selector": "#RightOperand3",
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
           "data": {
-            "value": "DPS5 - PO Inbound - Mitek - JDEPOASN",
-            "sensitive": true
+              "value": "Literal"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
-          "screenshot_on_failure": true
-        },
-        {
-          "step_id": "S0166",
-          "name": "Check for JDE Errors",
-          "action": "check_error",
-          "target": {
-            "description": "JDE Error Banner",
-            "selector": "#INYFEContent",
-            "selector_strategy": "css",
-            "iframe": "iframe#e1menuAppIframe"
-          },
-          "timeout_ms": 3000,
-          "retry_count": 2,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S017",
-          "name": "Click in the copy button",
-          "action": "click",
-          "target": {
-            "description": "in the 'Copy' button",
-            "selector": "#hc_OK",
-            "selector_strategy": "css",
-            "iframe": "iframe#e1menuAppIframe"
-          },
-          "timeout_ms": 30000,
-          "retry_count": 2,
-          "pre_wait_ms": 2000,
-          "screenshot_on_failure": true
-        },
-        {
-          "step_id": "S018",
           "name": "Enter Current version",
           "action": "type",
           "target": {
             "description": "in the 'Batch Application' field",
-            "selector": "input[name='qbe0_1.1']",
+            "selector": "#LITtf",
             "selector_strategy": "css",
             "iframe": "iframe#e1menuAppIframe"
           },
           "data": {
-            "value": "DPSES0115",
+            "value": "ESD501",
             "sensitive": true
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S018",
+          "name": "Select 'Data Selection'",
+          "action": "click",
+          "target": {
+            "description": "in the 'Data Selection' option",
+            "selector": "#hc_Select",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 2000,
+          "retry_count": 2,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S019",
-          "name": "Enter Current version",
-          "action": "key_press",
-          "data": {
-            "value": "Enter",
-            "sensitive": true
+          "name": "Screenshot order confirmation",
+          "action": "screenshot",
+          "timeout_ms": 2000,
+          "retry_count": 0,
+          "pre_wait_ms": 1000
+        },
+        {
+          "step_id": "S018",
+          "name": "Select 'Data Selection'",
+          "action": "click",
+          "target": {
+            "description": "in the 'Data Selection' option",
+            "selector": "#hc_Select",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
           },
-          "timeout_ms": 30000,
+          "timeout_ms": 2000,
           "retry_count": 2,
-          "pre_wait_ms": 2000,
+          "pre_wait_ms": 1000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S019",
+          "name": "Open the Raw Menu",
+          "action": "click",
+          "target": {
+            "description": "Row menu",
+            "selector": "#C0_58",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 2000,
+          "retry_count": 2,
+          "pre_wait_ms": 1000,
           "screenshot_on_failure": true
         },
         {
           "step_id": "S020",
+          "name": "Select 'Processing Options'",
+          "action": "click",
+          "target": {
+            "description": "in the 'Processing Options' option",
+            "selector": "#HE0_118",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 2000,
+          "retry_count": 2,
+          "pre_wait_ms": 1000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S021",
+          "name": "Enter a version",
+          "action": "type",
+          "target": {
+            "description": "in the 'P. O. Entry' field",
+            "selector": "#PO1T0",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "EDOBE017",
+            "sensitive": true
+          },
+          "timeout_ms": 2000,
+          "retry_count": 2,
+          "pre_wait_ms": 1000,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S022",
+          "name": "Click OK'",
+          "action": "click",
+          "target": {
+            "description": "Click Ok button",
+            "selector": "#hc_Select",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 2000,
+          "retry_count": 2,
+          "pre_wait_ms": 1000,
+          "screenshot_on_failure": true
+        },
+        
+        {
+          "step_id": "S023",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
-          "timeout_ms": 10000,
-          "retry_count": 0
+          "timeout_ms": 2000,
+          "retry_count": 0,
+          "pre_wait_ms": 1000
         }
       ],
       "expected_result": "Version is created successfully with title 'DPS'"
