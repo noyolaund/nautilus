@@ -407,6 +407,21 @@ class StagehandAIEngine(BaseEngine):
                         status = StepStatus.FAIL
                         error_message = f"Element not found: {desc}"
 
+                case ActionType.RIGHT_CLICK:
+                    desc = step.target.description  # type: ignore[union-attr]
+                    result = await self._call_act(page, f"Find element to right-click: {desc}")
+                    tokens_used = result.get("tokens", 0)
+                    locator, sel = await self._resolve_and_locate(
+                        page, result, timeout=step.timeout_ms,
+                        original_desc=desc,
+                    )
+                    if locator:
+                        await locator.click(button="right")
+                        resolved_selector = sel
+                    else:
+                        status = StepStatus.FAIL
+                        error_message = f"Element not found: {desc}"
+
                 case ActionType.TYPE:
                     desc = step.target.description  # type: ignore[union-attr]
                     value = step.data.value  # type: ignore[union-attr]
@@ -440,7 +455,13 @@ class StagehandAIEngine(BaseEngine):
                         original_desc=desc,
                     )
                     if locator:
-                        await locator.select_option(label=option)
+                        try:
+                            await locator.select_option(label=option)
+                        except Exception:
+                            try:
+                                await locator.select_option(value=option)
+                            except Exception:
+                                await locator.select_option(option)
                         resolved_selector = sel
                     else:
                         status = StepStatus.FAIL

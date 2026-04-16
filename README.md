@@ -221,7 +221,8 @@ curl http://localhost:8000/report/{run_id} -o report.html
 | Action | Description | Requires Target | Requires Data |
 |--------|-------------|:---:|:---:|
 | `navigate` | Go to URL | No | Yes (URL) |
-| `click` | Click element | Yes | No |
+| `click` | Left-click element | Yes | No |
+| `right_click` | Right-click element (opens context menu, JDE row actions, etc.) | Yes | No |
 | `type` | Type text into field | Yes | Yes (text) |
 | `select` | Select dropdown option | Yes | Yes (option) |
 | `wait` | Wait for element visible | Yes | No |

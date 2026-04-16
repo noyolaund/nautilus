@@ -465,6 +465,16 @@ class HybridPlaywrightEngine(BaseEngine):
                         )
                     await locator.click()
 
+                case ActionType.RIGHT_CLICK:
+                    locator, sel, tok = await self._resolve_element(page, step, test_case)
+                    tokens_used += tok
+                    resolved_selector = sel
+                    if locator is None:
+                        raise RuntimeError(
+                            f"Element not found: {step.target.description}"  # type: ignore[union-attr]
+                        )
+                    await locator.click(button="right")
+
                 case ActionType.TYPE:
                     locator, sel, tok = await self._resolve_element(page, step, test_case)
                     tokens_used += tok
@@ -486,7 +496,15 @@ class HybridPlaywrightEngine(BaseEngine):
                         raise RuntimeError(
                             f"Element not found: {step.target.description}"  # type: ignore[union-attr]
                         )
-                    await locator.select_option(label=step.data.value)  # type: ignore[union-attr]
+                    option_val = step.data.value  # type: ignore[union-attr]
+                    # Try matching by visible label first, then by value attribute
+                    try:
+                        await locator.select_option(label=option_val)
+                    except Exception:
+                        try:
+                            await locator.select_option(value=option_val)
+                        except Exception:
+                            await locator.select_option(option_val)
 
                 case ActionType.WAIT:
                     locator, sel, tok = await self._resolve_element(page, step, test_case)
