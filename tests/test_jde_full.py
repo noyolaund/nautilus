@@ -65,20 +65,21 @@ async def run():
             await r.type("the Password field", value=PASSWORD, sensitive=True)
 
             # AI finds the Sign In button (could be <input value="Sign In">)
-            await r.click("the Sign In button")
+            await r.click("the 'Sign In' button")
             await r.assert_visible("Welcome!")
             await r.screenshot()
 
             # ── Submit Job ──────────────────────────────────────────────
             # AI finds "Submit Job" text link
-            await r.click("Submit Job")
+            await r.click("the 'Submit Job' text")
             await r.screenshot()
 
             # ── Batch Application (CSS + iframe) ────────────────────────
             await r.type(
                 "Batch Application field",
-                value=APP_REPORT,
+                value="R4311Z1I",
                 selector="#C0_11", iframe=IFRAME,
+                selector_strategy="css"
             )
 
             # Find button via Ctrl+Alt+I
@@ -89,50 +90,52 @@ async def run():
                 "version QBE filter",
                 value=CURRENT_VERSION,
                 selector="input[name='qbe0_1.1']", iframe=IFRAME,
+                selector_strategy="css"
             )
             await r.key_press("Enter")
 
             # ── Select & Copy ───────────────────────────────────────────
-            await r.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME)
-            await r.click("Copy button", selector="#hc_Copy", iframe=IFRAME)
+            await r.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
+            await r.click("Copy button", selector="#hc_Copy", iframe=IFRAME, selector_strategy="css")
 
             # ── Fill new version ────────────────────────────────────────
-            await r.type("New Version field", value=NEW_VERSION, selector="#C0_17", iframe=IFRAME)
-            await r.type("New Version Title", value=NEW_VERSION_TITLE, selector="#C0_21", iframe=IFRAME)
+            await r.type("New Version field", value=NEW_VERSION, selector="#C0_17", iframe=IFRAME, selector_strategy="css")
+            await r.type("New Version Title", value=NEW_VERSION_TITLE, selector="#C0_21", iframe=IFRAME, selector_strategy="css")
 
             # ── Check for errors ────────────────────────────────────────
             await r.check_error("#INYFEContent")
 
             # ── Click OK ────────────────────────────────────────────────
-            await r.click("OK button", selector="#hc_OK", iframe=IFRAME)
+            await r.click("OK button", selector="#hc_OK", iframe=IFRAME, selector_strategy="css")
 
             # ── Search new version ──────────────────────────────────────
             await r.type(
                 "version QBE filter",
                 value=NEW_VERSION,
                 selector="input[name='qbe0_1.1']", iframe=IFRAME,
+                selector_strategy="css"
             )
             await r.key_press("Enter")
-            await r.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME)
+            await r.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
 
             # ── Data Selection ──────────────────────────────────────────
-            await r.click("Row Menu", selector="#C0_58", iframe=IFRAME)
-            await r.click("Data Selection option", selector="#HEC0_127", iframe=IFRAME)
+            await r.click("Row Menu", selector="#C0_58", iframe=IFRAME, selector_strategy="css")
+            await r.click("Data Selection option", selector="#HEC0_127", iframe=IFRAME, selector_strategy="css")
             await r.select(
                 "Right Operand dropdown",
                 value="Literal",
-                selector="#RightOperand3", iframe=IFRAME,
+                selector="#RightOperand3", iframe=IFRAME, selector_strategy="css"
             )
-            await r.type("Literal text field", value=LEFT_OPERAND_VALUE, selector="#LITtf", iframe=IFRAME)
-            await r.click("Select button", selector="#hc_Select", iframe=IFRAME)
+            await r.type("Literal text field", value=LEFT_OPERAND_VALUE, selector="#LITtf", iframe=IFRAME, selector_strategy="css")
+            await r.click("Select button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
             await r.screenshot()
-            await r.click("Select button (confirm)", selector="#hc_Select", iframe=IFRAME)
+            await r.click("Select button (confirm)", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
 
             # ── Processing Options ──────────────────────────────────────
-            await r.click("Row Menu", selector="#C0_58", iframe=IFRAME)
-            await r.click("Processing Options", selector="#HE0_118", iframe=IFRAME)
-            await r.type("P.O. Entry field", value=PROCESSING_OPTION, selector="#PO1T0", iframe=IFRAME)
-            await r.click("OK button", selector="#hc_Select", iframe=IFRAME)
+            await r.click("Row Menu", selector="#C0_58", iframe=IFRAME, selector_strategy="css")
+            await r.click("Processing Options", selector="#HE0_118", iframe=IFRAME, selector_strategy="css")
+            await r.type("P.O. Entry field", value=PROCESSING_OPTION, selector="#PO1T0", iframe=IFRAME, selector_strategy="css")
+            await r.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
 
             # ── Done ────────────────────────────────────────────────────
             await r.screenshot()

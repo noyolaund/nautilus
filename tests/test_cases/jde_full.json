@@ -426,16 +426,46 @@
           "pre_wait_ms": 200,
           "screenshot_on_failure": true
         },
+        
         {
           "step_id": "S027",
-          "name": "Screenshot order confirmation",
-          "action": "screenshot",
+          "name": "Open Right Operand dropdown menu",
+          "action": "select",
+          "target": {
+            "description": "dropdown menu",
+            "selector": "#RightOperand4",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+              "value": "Literal"
+          },
           "timeout_ms": 1000,
-          "retry_count": 0,
-          "pre_wait_ms": 200
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
         },
         {
           "step_id": "S028",
+          "name": "Enter Current version",
+          "action": "type",
+          "target": {
+            "description": "in the 'Batch Application' field",
+            "selector": "#LITtf",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "data": {
+            "value": "03",
+            "sensitive": true
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S029",
           "name": "Select 'Data Selection'",
           "action": "click",
           "target": {
@@ -450,7 +480,30 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S029",
+          "step_id": "S030",
+          "name": "Screenshot order confirmation",
+          "action": "screenshot",
+          "timeout_ms": 1000,
+          "retry_count": 0,
+          "pre_wait_ms": 200
+        },
+        {
+          "step_id": "S031",
+          "name": "Save data'",
+          "action": "click",
+          "target": {
+            "description": "in the check to save data",
+            "selector": "#hc_Select",
+            "selector_strategy": "css",
+            "iframe": "iframe#e1menuAppIframe"
+          },
+          "timeout_ms": 1000,
+          "retry_count": 2,
+          "pre_wait_ms": 200,
+          "screenshot_on_failure": true
+        },
+        {
+          "step_id": "S032",
           "name": "Open the Raw Menu",
           "action": "click",
           "target": {
@@ -465,7 +518,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S030",
+          "step_id": "S033",
           "name": "Select 'Processing Options'",
           "action": "click",
           "target": {
@@ -480,7 +533,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S031",
+          "step_id": "S034",
           "name": "Enter a version",
           "action": "type",
           "target": {
@@ -499,7 +552,7 @@
           "screenshot_on_failure": true
         },
         {
-          "step_id": "S032",
+          "step_id": "S035",
           "name": "Click OK'",
           "action": "click",
           "target": {
@@ -515,7 +568,7 @@
         },
         
         {
-          "step_id": "S033",
+          "step_id": "S036",
           "name": "Screenshot order confirmation",
           "action": "screenshot",
           "timeout_ms": 1000,
