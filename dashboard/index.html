@@ -253,12 +253,8 @@ async function loadData() {
         if (!res.ok) throw new Error(data.detail || data.message || 'Failed to load');
 
         document.getElementById('data-preview').classList.remove('hidden');
-        const pc = data.path_counts || {full:0, a:0, b:0};
         document.getElementById('data-info').innerHTML =
-            `<strong>${data.rows} valid rows</strong> to be processed` +
-            ` &nbsp;·&nbsp; <span style="color:var(--accent)">Full: ${pc.full}</span>` +
-            ` &nbsp;·&nbsp; <span style="color:var(--accent)">A: ${pc.a}</span>` +
-            ` &nbsp;·&nbsp; <span style="color:var(--accent)">B: ${pc.b}</span>` +
+            `<strong>${data.rows} report${data.rows === 1 ? '' : 's'}</strong> to be processed` +
             (data.errors ? ` &nbsp;·&nbsp; <span style="color:var(--fail)">(${data.errors.length} warnings)</span>` : '');
 
         // Show skipped rows
@@ -274,7 +270,7 @@ async function loadData() {
             skippedInfo.classList.add('hidden');
         }
 
-        // Build preview table — App / Report + Path + JSON file
+        // Build preview table — App / Report + Data Selections + Processing Options
         const preview = data.preview || [];
         const thead = document.querySelector('#data-table thead');
         const tbody = document.querySelector('#data-table tbody');
@@ -282,33 +278,26 @@ async function loadData() {
             thead.innerHTML = '<tr>' +
                 '<th style="width:50px">#</th>' +
                 '<th>App / Report</th>' +
-                '<th>Col G (left_operand)</th>' +
-                '<th>Col I (tab)</th>' +
-                '<th>Path</th>' +
-                '<th>JSON file</th>' +
+                '<th>Current Version</th>' +
+                '<th>New Version</th>' +
+                '<th>Data Selections</th>' +
+                '<th>Processing Options</th>' +
                 '</tr>';
             tbody.innerHTML = preview.map((row, i) => {
-                const pathLabel = {full:'Full', a:'A path', b:'B path'}[row._path] || '?';
-                const pathColor = row._path ? 'var(--accent)' : 'var(--muted)';
-                const g = row._col_g === '' || row._col_g == null ? '<em style="color:var(--muted)">empty</em>' : row._col_g;
-                const ivi = row._col_i === '' || row._col_i == null ? '<em style="color:var(--muted)">empty</em>' : row._col_i;
+                const dsCount = row.data_selections_count || 0;
+                const poCount = row.processing_options_count || 0;
                 return `<tr>
                     <td>${i+1}</td>
                     <td>${row.app_report || ''}</td>
-                    <td style="font-size:.75rem">${g}</td>
-                    <td style="font-size:.75rem">${ivi}</td>
-                    <td><span class="badge" style="background:var(--accent-bg);color:${pathColor}">${pathLabel}</span></td>
-                    <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${row._json || ''}</td>
+                    <td>${row.current_version || ''}</td>
+                    <td>${row.new_version || ''}</td>
+                    <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${dsCount}</span></td>
+                    <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${poCount}</span></td>
                 </tr>`;
             }).join('');
-        } else {
-            thead.innerHTML = '';
-            tbody.innerHTML = '';
-        }
-
-        setStatus('st-data', 'status-ok', `Data: ${data.rows} rows`);
+        setStatus('st-data', 'status-ok', `Data: ${data.rows} report${data.rows === 1 ? '' : 's'}`);
         document.getElementById('btn-execute').disabled = false;
-        document.getElementById('btn-execute').textContent = `Execute All (${data.rows} iterations)`;
+        document.getElementById('btn-execute').textContent = `Execute All (${data.rows} iteration${data.rows === 1 ? '' : 's'})`;
     } catch(e) {
         setStatus('st-data', 'status-err', 'Data: Error');
         alert('Error: ' + e.message);
@@ -357,20 +346,19 @@ function showResults(data) {
     `;
 
     const thead = document.querySelector('#results-table thead');
-    thead.innerHTML = '<tr><th>#</th><th>Name</th><th>Path</th><th>Status</th><th>Duration</th><th>Tokens</th><th>Details</th></tr>';
+    thead.innerHTML = '<tr><th>#</th><th>Report</th><th>DS</th><th>PO</th><th>Status</th><th>Duration</th><th>Details</th></tr>';
 
     const tbody = document.querySelector('#results-table tbody');
     tbody.innerHTML = (data.results || []).map(r => {
         const badge = r.status === 'pass' ? 'badge-pass' : 'badge-fail';
-        const pathLabel = {full:'Full', a:'A path', b:'B path'}[r.path] || (r.path || '?');
         const errors = (r.steps || []).filter(s => s.error).map(s => s.error).join('; ');
         return `<tr>
             <td>${r.iteration}</td>
             <td>${r.name}</td>
-            <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${pathLabel}</span></td>
+            <td>${r.data_selections_count || 0}</td>
+            <td>${r.processing_options_count || 0}</td>
             <td><span class="badge ${badge}">${r.status.toUpperCase()}</span></td>
             <td>${(r.duration_ms/1000).toFixed(1)}s</td>
-            <td>${r.tokens}</td>
             <td style="font-size:.7rem;color:var(--muted)">${errors || 'OK'}</td>
         </tr>`;
     }).join('');

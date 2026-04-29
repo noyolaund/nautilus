@@ -152,6 +152,65 @@ curl http://localhost:8000/status/{run_id}
 curl http://localhost:8000/report/{run_id} -o report.html
 ```
 
+### 5. Run via Dashboard (JDE Report Version Workflow)
+
+A web dashboard for the **JDE Report Version Copy** repetitive task. Login once, iterate over many Excel rows, all in the same browser session.
+
+```bash
+# Start the dashboard (default port 5000)
+python main.py dashboard
+
+# Open in browser
+http://localhost:5000
+```
+
+**Workflow (4 steps in the UI):**
+
+1. **Start Browser & Login** — Launches Chromium and runs `tests/test_cases/login_assert.json`. Login success is determined by the final `assert_visible "Welcome!"` step.
+2. **Load Excel Data** — Pick an `.xlsx` file (with `.xlsx` filter) and a sheet name. The dashboard parses the file, validates that column B (App / Report) starts with `R` or `P`, and shows the valid rows. Rows are classified into three paths based on columns G (left_operand) and I (tab):
+   - **Full path** — both G and I have data → `tests/test_cases/jde_full.json`
+   - **A path** — only G has data → `tests/test_cases/jde_a_path.json`
+   - **B path** — only I has data → `tests/test_cases/jde_b_path.json`
+   - Rows with both G and I empty are skipped
+3. **Execute** — For each valid row, the dashboard loads the path-specific JSON and runs its steps with `{{data.xxx}}` templates resolved from the row. All iterations reuse the same logged-in browser session.
+4. **Results** — A live table shows pass/fail status, duration, tokens, and the path/JSON used per iteration. Click "View Full HTML Report" for the detailed report.
+
+**Excel column contract** (columns A–K, fixed by the dashboard):
+
+| Col | Variable | Required | Notes |
+|----|----------|:---:|-------|
+| A | `user_story` | No | |
+| B | `app_report` | Yes | Must start with `R` or `P` |
+| C | `current_version` | Yes | |
+| D | `new_version` | Yes | |
+| E | `current_version_title` | No | |
+| F | `new_version_title` | Yes | |
+| G | `left_operand` | No | Path detection |
+| H | `data_new` | No | |
+| I | `tab` | No | Path detection |
+| J | `option_number` | No | |
+| K | `processing_new` | No | |
+
+**Run folder per session** — every dashboard run creates `logs/MM-DD-YYYY_HH_MM_JDE_Dashboard/` containing:
+- `uploaded_<filename>.xlsx` — the Excel file used
+- `report_<suite_name>.html` — final HTML report
+- `<suite_id>_<timestamp>.jsonl` — structured per-step log
+- `screenshots/` — per-iteration screenshots
+
+### 6. Optional — LLM Proxy Servers
+
+Run a proxy server in front of the engines so the LLM calls go through a corporate endpoint (Globant GeAI or JNJ Azure) instead of direct OpenAI/Anthropic.
+
+```bash
+# Globant GeAI proxy (default port 3456)
+python main.py proxy
+
+# JNJ Azure proxy (default port 3457) — requires VPN
+python main.py proxy-jnj
+```
+
+Engines auto-detect the proxy via `STAGEHAND_SERVER_URL` in `.env`. If the proxy is down, they fall back to direct LLM calls using `LLM_API_KEY`. See `.env.example` for proxy config.
+
 ---
 
 ## JSON Schema — Test Case Structure

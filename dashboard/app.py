@@ -43,6 +43,7 @@ _data_context: Optional[DataContext] = None
 _data_source_config: Optional[DataSourceConfig] = None
 _execution_results: list[dict] = []
 _row_paths: dict[int, str] = {}  # row_index → path name (full|a|b)
+_report_groups: list[dict] = []  # grouped Excel rows ready for run_jde_full()
 _login_completed: bool = False
 
 
@@ -123,6 +124,81 @@ def detect_path(row_values: dict) -> Optional[str]:
     if not g and i:
         return "b"
     return None
+
+
+def group_excel_rows(rows: list) -> tuple[list[dict], list[dict]]:
+    """Group consecutive Excel rows into report groups.
+
+    A row whose column B (`app_report`) starts with R or P STARTS a new group
+    (the report row). Subsequent rows whose `app_report` is empty but have G/H
+    or I/J/K data are CONTINUATION rows that add more data selections /
+    processing options to the previous group.
+
+    Returns: (groups, skipped)
+    """
+    groups: list[dict] = []
+    skipped: list[dict] = []
+    current: Optional[dict] = None
+
+    def _has_ds(values: dict) -> bool:
+        return _cell_has_value(values.get("left_operand"))
+
+    def _has_po(values: dict) -> bool:
+        return _cell_has_value(values.get("tab")) or _cell_has_value(values.get("processing_new"))
+
+    for r in rows:
+        values = r.values
+        app_report = str(values.get("app_report", "") or "").strip().upper()
+
+        if app_report and (app_report.startswith("R") or app_report.startswith("P")):
+            # New report — finalize previous group, start a fresh one
+            current = {
+                "row_index": r.row_index,
+                "report": dict(values),
+                "data_selections": [],
+                "processing_options": [],
+            }
+            if _has_ds(values):
+                current["data_selections"].append({
+                    "left_operand": values.get("left_operand", ""),
+                    "data_new": values.get("data_new", ""),
+                })
+            if _has_po(values):
+                current["processing_options"].append({
+                    "tab": values.get("tab", ""),
+                    "option_number": values.get("option_number", ""),
+                    "processing_new": values.get("processing_new", ""),
+                })
+            groups.append(current)
+        elif app_report:
+            # Has app_report but doesn't start with R or P
+            skipped.append({
+                "row": r.row_index,
+                "app_report": app_report,
+                "reason": "Column B must start with 'R' or 'P'",
+            })
+        elif current is not None and (_has_ds(values) or _has_po(values)):
+            # Continuation row — append data selection / processing option to current group
+            if _has_ds(values):
+                current["data_selections"].append({
+                    "left_operand": values.get("left_operand", ""),
+                    "data_new": values.get("data_new", ""),
+                })
+            if _has_po(values):
+                current["processing_options"].append({
+                    "tab": values.get("tab", ""),
+                    "option_number": values.get("option_number", ""),
+                    "processing_new": values.get("processing_new", ""),
+                })
+        else:
+            # Empty row with no app_report and no DS/PO data
+            skipped.append({
+                "row": r.row_index,
+                "app_report": app_report,
+                "reason": "Empty row (no app_report, no data selection, no processing option)",
+            })
+
+    return groups, skipped
 
 
 def create_dashboard_app() -> FastAPI:
@@ -233,63 +309,48 @@ def create_dashboard_app() -> FastAPI:
             _session.logger.error("Excel parse error: %s\n%s", err, traceback.format_exc())
             raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {err}")
 
+        global _report_groups
+        _report_groups = []
         skipped_rows: list[dict] = []
-        global _row_paths
-        _row_paths = {}
-        path_counts = {"full": 0, "a": 0, "b": 0}
 
-        for sheet_name, rows in list(_data_context.sheets.items()):
-            valid_rows = []
+        # Log raw rows for debugging
+        for sheet_name, rows in _data_context.sheets.items():
             for r in rows:
-                app_report = str(r.values.get("app_report", "")).strip().upper()
-                # Debug: log what the parser extracted for each row
                 _session.logger.info(
-                    "Row %d: app_report=%r  G(left_operand)=%r  I(tab)=%r",
+                    "Row %d: app_report=%r G(left_operand)=%r H(data_new)=%r I(tab)=%r J(option)=%r K(processing)=%r",
                     r.row_index,
                     r.values.get("app_report"),
                     r.values.get("left_operand"),
+                    r.values.get("data_new"),
                     r.values.get("tab"),
+                    r.values.get("option_number"),
+                    r.values.get("processing_new"),
                 )
-                # 1. Filter by column B prefix
-                if not app_report or not (app_report.startswith("R") or app_report.startswith("P")):
-                    skipped_rows.append({
-                        "row": r.row_index,
-                        "app_report": app_report,
-                        "reason": "Column B must start with 'R' or 'P'",
-                    })
-                    continue
-                # 2. Detect which path applies
-                path = detect_path(r.values)
-                if path is None:
-                    skipped_rows.append({
-                        "row": r.row_index,
-                        "app_report": app_report,
-                        "reason": "Both column G and I are empty — no path applies",
-                    })
-                    continue
-                _row_paths[r.row_index] = path
-                path_counts[path] += 1
-                valid_rows.append(r)
-            _data_context.sheets[sheet_name] = valid_rows
-        _data_context.total_rows = sum(len(rs) for rs in _data_context.sheets.values())
 
-        # Build preview with path/json info per row
-        preview = _format_preview(_data_context)
-        for row in preview:
-            path = _row_paths.get(row["_row"])
-            row["_path"] = path or ""
-            row["_json"] = PATH_TO_JSON.get(path, "") if path else ""
-            # Expose G/I values for debugging
-            row["_col_g"] = row.get("left_operand", "")
-            row["_col_i"] = row.get("tab", "")
+            # Group consecutive rows into report groups (continuation rows merge into previous)
+            sheet_groups, sheet_skipped = group_excel_rows(rows)
+            _report_groups.extend(sheet_groups)
+            skipped_rows.extend(sheet_skipped)
+
+        # Build a flat preview — one row per report group
+        preview = []
+        for group in _report_groups:
+            report = group["report"]
+            preview.append({
+                "_row": group["row_index"],
+                "app_report": report.get("app_report", ""),
+                "current_version": report.get("current_version", ""),
+                "new_version": report.get("new_version", ""),
+                "data_selections_count": len(group["data_selections"]),
+                "processing_options_count": len(group["processing_options"]),
+            })
 
         return {
             "status": "success",
             "filename": file.filename,
-            "rows": _data_context.total_rows,
+            "rows": len(_report_groups),
             "skipped_rows": skipped_rows,
             "skipped_count": len(skipped_rows),
-            "path_counts": path_counts,
             "preview": preview,
         }
 
@@ -304,79 +365,68 @@ def create_dashboard_app() -> FastAPI:
 
     @app.post("/api/execute")
     async def execute_all():
-        """Run iterations: each row uses its own JSON file based on detected path."""
+        """Run iterations: each report group runs the JDE Full Path Python flow."""
         global _execution_results
+        import time
+        from tests.test_jde_full import run_jde_full
+
         if not _session.is_logged_in:
             raise HTTPException(status_code=400, detail="Not logged in. Run login first.")
-        if not _data_context:
+        if not _report_groups:
             raise HTTPException(status_code=400, detail="No data loaded. Load Excel first.")
 
         _execution_results = []
+        total = len(_report_groups)
+        page = _session._page  # the persistent logged-in page
 
-        default_sheet = list(_data_context.sheets.keys())[0]
-        all_rows = _data_context.sheets[default_sheet]
-        total = len(all_rows)
-        if total == 0:
-            raise HTTPException(status_code=400, detail="No valid rows to process")
+        if page is None:
+            raise HTTPException(status_code=500, detail="Browser page is not available")
 
-        resolver = TemplateResolver(_data_context, default_sheet=default_sheet)
+        for i, group in enumerate(_report_groups, 1):
+            report = group["report"]
+            label = f"{report.get('app_report', '?')} → {report.get('new_version', '?')}"
+            print(f"\n=== Iteration {i}/{total}: {label} ===")
+            print(f"   Data selections: {len(group['data_selections'])}, Processing options: {len(group['processing_options'])}")
 
-        # Cache loaded path-suites so we don't re-read files for every row
-        path_suites: dict[str, TestSuiteRequest] = {}
-
-        def _load_path_suite(path_key: str) -> Optional[TestSuiteRequest]:
-            if path_key in path_suites:
-                return path_suites[path_key]
-            json_path = PATH_TO_JSON.get(path_key)
-            if not json_path or not Path(json_path).exists():
-                return None
+            start = time.monotonic()
             try:
-                raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
-                raw.pop("_data_source", None)
-                suite = TestSuiteRequest(**raw)
-                path_suites[path_key] = suite
-                return suite
+                result = await run_jde_full(page, group)
+                status = result.get("status", "fail")
+                error = result.get("error")
             except Exception as exc:
-                _session.logger.error("Failed to load %s: %s", json_path, exc)
-                return None
+                import traceback
+                _session.logger.error("Iteration %d crashed: %s\n%s", i, exc, traceback.format_exc())
+                status = "fail"
+                error = f"Unhandled exception: {exc}"
 
-        for i, row in enumerate(all_rows, 1):
-            path_key = _row_paths.get(row.row_index)
-            json_file = PATH_TO_JSON.get(path_key, "") if path_key else ""
-
-            path_suite = _load_path_suite(path_key) if path_key else None
-            if not path_suite or not path_suite.test_cases:
-                _execution_results.append({
-                    "iteration": i,
-                    "total": total,
-                    "test_id": "N/A",
-                    "name": f"Row {row.row_index} ({row.values.get('app_report', '?')})",
-                    "status": "fail",
-                    "duration_ms": 0,
-                    "tokens": 0,
-                    "screenshot": "",
-                    "path": path_key or "?",
-                    "json_file": json_file,
-                    "steps": [{
-                        "step_id": "N/A",
-                        "name": "Load path JSON",
-                        "status": "fail",
-                        "duration_ms": 0,
-                        "error": f"Could not load JSON for path '{path_key}': {json_file}",
-                        "selector": None,
-                    }],
-                })
-                continue
-
-            # Resolve {{data.xxx}} templates with this row's data
-            resolved_suite = resolver._resolve_suite_for_row(path_suite, row, i)
-            resolved_tc = resolved_suite.test_cases[0]
-
-            result = await _session.execute_iteration(resolved_tc, i, total)
-            # Tag the result with which path/json was used
-            result["path"] = path_key
-            result["json_file"] = json_file
-            _execution_results.append(result)
+            duration_ms = (time.monotonic() - start) * 1000
+            _execution_results.append({
+                "iteration": i,
+                "total": total,
+                "test_id": report.get("app_report", "?"),
+                "name": label,
+                "status": status,
+                "duration_ms": round(duration_ms),
+                "tokens": 0,
+                "screenshot": "",
+                "data_selections_count": len(group["data_selections"]),
+                "processing_options_count": len(group["processing_options"]),
+                "steps": [{
+                    "step_id": "S001",
+                    "name": label,
+                    "status": status,
+                    "duration_ms": round(duration_ms),
+                    "error": error,
+                    "selector": None,
+                }] if status == "fail" else [{
+                    "step_id": "S001",
+                    "name": label,
+                    "status": "pass",
+                    "duration_ms": round(duration_ms),
+                    "error": None,
+                    "selector": None,
+                }],
+            })
 
         # Generate report
         report_path = _generate_execution_report()
