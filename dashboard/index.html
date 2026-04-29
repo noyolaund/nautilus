@@ -295,6 +295,11 @@ async function loadData() {
                     <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${poCount}</span></td>
                 </tr>`;
             }).join('');
+        } else {
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+        }
+
         setStatus('st-data', 'status-ok', `Data: ${data.rows} report${data.rows === 1 ? '' : 's'}`);
         document.getElementById('btn-execute').disabled = false;
         document.getElementById('btn-execute').textContent = `Execute All (${data.rows} iteration${data.rows === 1 ? '' : 's'})`;
