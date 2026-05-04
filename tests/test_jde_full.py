@@ -41,6 +41,47 @@ IFRAME = "iframe#e1menuAppIframe"
 # Login flow (used when running standalone)
 # ---------------------------------------------------------------------------
 
+async def find_right_operand_selector(page: Page, left_operand_text: str) -> str:
+    """Scan all #LeftOperand* dropdowns inside the JDE iframe; return the
+    matching #RightOperandN selector for the row whose Left Operand option
+    text contains *left_operand_text*.
+
+    Falls back to "#RightOperand3" if nothing matches.
+    """
+    if not left_operand_text:
+        return "#RightOperand3"
+
+    # Inside the e1menuAppIframe, walk every select[id^='LeftOperand'] and
+    # read the currently selected option's visible text.
+    js = """(needle) => {
+        needle = (needle || '').trim().toLowerCase();
+        const selects = document.querySelectorAll("select[id^='LeftOperand']");
+        for (const sel of selects) {
+            const opt = sel.options[sel.selectedIndex];
+            const text = (opt ? opt.textContent : '').trim().toLowerCase();
+            if (text && text.includes(needle)) {
+                // Extract the trailing number from the id, e.g. LeftOperand4 -> 4
+                const m = sel.id.match(/(\\d+)$/);
+                if (m) return m[1];
+            }
+        }
+        return null;
+    }"""
+
+    for frame in page.frames:
+        try:
+            n = await frame.evaluate(js, left_operand_text)
+            if n:
+                selector = f"#RightOperand{n}"
+                print(f"  ↳ Matched left operand '{left_operand_text}' on row {n} → {selector}")
+                return selector
+        except Exception:
+            continue
+
+    print(f"  ↳ No LeftOperand dropdown matched '{left_operand_text}', defaulting to #RightOperand3")
+    return "#RightOperand3"
+
+
 async def login(runner: StepRunner) -> None:
     """Run the JDE login flow."""
     await runner.navigate(JDE_URL)
@@ -153,11 +194,16 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 data_value = sel.get("data_new", "")
                 print(f"[{label}]   DS {idx}: {left_operand} = {data_value}")
 
-                # Pick "Literal" from the right operand dropdown
+                # Find the matching RightOperand row by scanning all
+                # LeftOperand dropdowns for one whose option text contains
+                # the user's left_operand value.
+                right_operand_sel = await find_right_operand_selector(page, left_operand)
+
+                # Pick "Literal" from the matching right operand dropdown
                 await runner.select(
                     "Right Operand dropdown",
                     value="Literal",
-                    selector="#RightOperand3", iframe=IFRAME, selector_strategy="css"
+                    selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
                 )
                 # Enter the literal value (the data column)
                 await runner.type(
