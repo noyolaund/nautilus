@@ -92,14 +92,14 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         print(f"\n[{label}] === Starting JDE Full Path ===")
         print(f"[{label}] Data selections: {len(data_selections)}, Processing options: {len(processing_options)}")
 
-        await runner.click("Submit Job")
+        await runner.click("the 'Submit Job' text")
         await runner.screenshot()
 
         # ── Batch Application ───────────────────────────────────────────
         await runner.type(
             "Batch Application field",
             value=report["app_report"],
-            selector="#C0_11", iframe=IFRAME,
+            selector="#C0_11", iframe=IFRAME, selector_strategy="css"
         )
         await runner.key_press("Ctrl+Alt+I")
 
@@ -107,46 +107,46 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         await runner.type(
             "version QBE filter",
             value=report["current_version"],
-            selector="input[name='qbe0_1.1']", iframe=IFRAME,
+            selector="input[name='qbe0_1.1']", iframe=IFRAME, selector_strategy="css"
         )
         await runner.key_press("Enter")
 
         # ── Select & Copy ───────────────────────────────────────────────
-        await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME)
-        await runner.click("Copy button", selector="#hc_Copy", iframe=IFRAME)
+        await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
+        await runner.click("Copy button", selector="#hc_Copy", iframe=IFRAME, selector_strategy="css")
 
         # ── Fill new version ────────────────────────────────────────────
         await runner.type(
             "New Version field",
             value=report["new_version"],
-            selector="#C0_17", iframe=IFRAME,
+            selector="#C0_17", iframe=IFRAME, selector_strategy="css"
         )
         await runner.type(
             "New Version Title",
             value=report.get("new_version_title", ""),
-            selector="#C0_21", iframe=IFRAME,
+            selector="#C0_21", iframe=IFRAME, selector_strategy="css"
         )
 
         # ── Check for errors (e.g. version already exists) ──────────────
         await runner.check_error("#INYFEContent")
 
         # ── Click OK ────────────────────────────────────────────────────
-        await runner.click("OK button", selector="#hc_OK", iframe=IFRAME)
+        await runner.click("OK button", selector="#hc_OK", iframe=IFRAME, selector_strategy="css")
 
         # ── Search new version ──────────────────────────────────────────
         await runner.type(
             "version QBE filter",
             value=report["new_version"],
-            selector="input[name='qbe0_1.1']", iframe=IFRAME,
+            selector="input[name='qbe0_1.1']", iframe=IFRAME, selector_strategy="css"
         )
         await runner.key_press("Enter")
-        await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME)
+        await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
 
         # ── Data Selection — loop once per entry ────────────────────────
         if data_selections:
             print(f"[{label}] Configuring {len(data_selections)} data selection(s)")
-            await runner.click("Row Menu", selector="#C0_58", iframe=IFRAME)
-            await runner.click("Data Selection option", selector="#HEC0_127", iframe=IFRAME)
+            await runner.click("Row Menu", selector="#C0_58", iframe=IFRAME, selector_strategy="css")
+            await runner.click("Data Selection option", selector="#HE0_127", iframe=IFRAME, selector_strategy="css")
 
             for idx, sel in enumerate(data_selections, 1):
                 left_operand = sel.get("left_operand", "")
@@ -157,26 +157,26 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 await runner.select(
                     "Right Operand dropdown",
                     value="Literal",
-                    selector="#RightOperand3", iframe=IFRAME,
+                    selector="#RightOperand3", iframe=IFRAME, selector_strategy="css"
                 )
                 # Enter the literal value (the data column)
                 await runner.type(
                     "Literal text field",
                     value=str(data_value),
-                    selector="#LITtf", iframe=IFRAME,
+                    selector="#LITtf", iframe=IFRAME, selector_strategy="css"
                 )
                 # Apply
-                await runner.click("Select button", selector="#hc_Select", iframe=IFRAME)
+                await runner.click("Select button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
                 await runner.screenshot()
 
-            # Close the Data Selection dialog
-            await runner.click("Close Data Selection dialog", selector="#hc_Select", iframe=IFRAME)
+            # Close the Data Selections dialog
+            await runner.click("Close Data Selection dialog", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
 
-        # ── Processing Options — loop once per entry ────────────────────
+        # --- Processing Options -- loop once per entry
         if processing_options:
             print(f"[{label}] Configuring {len(processing_options)} processing option(s)")
-            await runner.click("Row Menu", selector="#C0_58", iframe=IFRAME)
-            await runner.click("Processing Options", selector="#HE0_118", iframe=IFRAME)
+            await runner.click("Row Menu", selector="#C0_58", iframe=IFRAME, selector_strategy="css")
+            await runner.click("Processing Options", selector="#HE0_118", iframe=IFRAME, selector_strategy="css")
 
             for idx, po in enumerate(processing_options, 1):
                 tab = po.get("tab", "")
@@ -190,11 +190,11 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     await runner.type(
                         "Processing option value field",
                         value=str(processing_value),
-                        selector="#PO1T0", iframe=IFRAME,
+                        selector="#PO1T0", iframe=IFRAME, selector_strategy="css"
                     )
 
             # Apply
-            await runner.click("OK button", selector="#hc_Select", iframe=IFRAME)
+            await runner.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
 
         # ── Done ────────────────────────────────────────────────────────
         await runner.screenshot()
