@@ -42,9 +42,12 @@ IFRAME = "iframe#e1menuAppIframe"
 # ---------------------------------------------------------------------------
 
 async def find_right_operand_selector(page: Page, left_operand_text: str) -> str:
-    """Scan all #LeftOperand* dropdowns inside the JDE iframe; return the
-    matching #RightOperandN selector for the row whose Left Operand option
-    text contains *left_operand_text*.
+    """Scan every page (including popups) and every frame for #LeftOperand*
+    dropdowns. Return the matching #RightOperandN selector for the row whose
+    Left Operand option text contains *left_operand_text*.
+
+    JDE often opens "Data Selection" in a popup window — so we need to walk
+    `context.pages` and not just the original page's frames.
 
     Raises LookupError if no dropdown matches — execution will stop for the
     current iteration so the user can inspect what's on the page.
@@ -55,7 +58,11 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
     needle = left_operand_text.strip().lower()
     print(f"  ↳ Searching for left operand: {left_operand_text!r} (needle={needle!r})")
 
-    # JS that returns a diagnostic dump of every LeftOperand* found in this frame
+    # Wait for the Data Selection dialog to finish rendering on the current page
+    print(f"  ↳ Waiting for Data Selection dialog to render...")
+    await asyncio.sleep(5)
+
+    # JS that returns a diagnostic dump of every LeftOperand* in a frame
     js_inspect = """() => {
         const selects = document.querySelectorAll("select[id^='LeftOperand']");
         const out = [];
@@ -71,15 +78,16 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                 firstFiveOptions: allTexts.slice(0, 5),
             });
         }
-        return out;
+        return {
+            totalSelects: document.querySelectorAll('select').length,
+            leftOperands: out,
+        };
     }"""
 
-    # JS that searches: tries selected option first, then any option text
+    # JS that searches across both selected option and any option
     js_match = """(needle) => {
         needle = (needle || '').trim().toLowerCase();
         const selects = document.querySelectorAll("select[id^='LeftOperand']");
-
-        // Strategy 1: currently selected option text contains needle
         for (const sel of selects) {
             const opt = sel.options[sel.selectedIndex];
             const text = (opt ? opt.textContent : '').trim().toLowerCase();
@@ -88,7 +96,6 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                 return { id: sel.id, n: m ? m[1] : null, strategy: "selected", text: text };
             }
         }
-        // Strategy 2: ANY option text contains needle (might be a future row)
         for (const sel of selects) {
             for (const opt of sel.options) {
                 const text = (opt.textContent || '').trim().toLowerCase();
@@ -101,47 +108,69 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
         return null;
     }"""
 
-    # Walk every frame on the page and try to find the dropdown
-    for frame in page.frames:
+    # Collect ALL pages in the browser context (main + popups + new tabs)
+    pages = list(page.context.pages)
+    print(f"  ↳ Browser context has {len(pages)} page(s)")
+    for i, p in enumerate(pages):
         try:
-            inspection = await frame.evaluate(js_inspect)
+            print(f"      page[{i}] url={p.url[:100]!r}  title={(await p.title())[:60]!r}")
         except Exception:
-            # Frame might be cross-origin or detached — skip silently
+            print(f"      page[{i}] (closed or inaccessible)")
+
+    # Walk every page → every frame
+    for page_idx, p in enumerate(pages):
+        try:
+            frames = p.frames
+        except Exception:
+            print(f"  ↳ page[{page_idx}] inaccessible, skipping")
             continue
 
-        if not inspection:
-            continue
+        for frame in frames:
+            frame_label = frame.name or frame.url[:60] or "main"
+            try:
+                inspection = await frame.evaluate(js_inspect)
+            except Exception as exc:
+                print(f"  ↳ page[{page_idx}] frame [{frame_label}]: cannot evaluate ({exc})")
+                continue
 
-        # Log what we found in this frame (filter out empty frames)
-        frame_label = frame.name or frame.url[:60] or "main"
-        print(f"  ↳ Frame [{frame_label}] has {len(inspection)} LeftOperand* dropdown(s):")
-        for d in inspection:
-            print(
-                f"      {d['id']}: selectedIndex={d['selectedIndex']} "
-                f"value={d.get('value')!r} optionCount={d['optionCount']} "
-                f"selectedText={d['selectedText']!r}"
-            )
-            if d.get("firstFiveOptions"):
-                print(f"        first options: {d['firstFiveOptions']}")
+            total = inspection.get("totalSelects", 0)
+            left_ops = inspection.get("leftOperands", [])
 
-        # Try to match
-        try:
-            match = await frame.evaluate(js_match, left_operand_text)
-        except Exception:
-            match = None
+            if total == 0:
+                # Empty frame, don't clutter the log
+                continue
 
-        if match and match.get("n"):
-            n = match["n"]
-            selector = f"#RightOperand{n}"
-            print(
-                f"  ↳ MATCH found: {match['id']} via {match['strategy']} "
-                f"(option text: {match['text']!r}) → {selector}"
-            )
-            return selector
+            print(f"  ↳ page[{page_idx}] frame [{frame_label}]: total <select>={total}, LeftOperand*={len(left_ops)}")
+            for d in left_ops:
+                print(
+                    f"      {d['id']}: selectedIndex={d['selectedIndex']} "
+                    f"value={d.get('value')!r} optionCount={d['optionCount']} "
+                    f"selectedText={d['selectedText']!r}"
+                )
+                if d.get("firstFiveOptions"):
+                    print(f"        first options: {d['firstFiveOptions']}")
+
+            if not left_ops:
+                continue
+
+            # Try to match
+            try:
+                match = await frame.evaluate(js_match, left_operand_text)
+            except Exception:
+                match = None
+
+            if match and match.get("n"):
+                n = match["n"]
+                selector = f"#RightOperand{n}"
+                print(
+                    f"  ↳ MATCH: page[{page_idx}] frame [{frame_label}] {match['id']} "
+                    f"via {match['strategy']} (text: {match['text']!r}) → {selector}"
+                )
+                return selector
 
     raise LookupError(
         f"No LeftOperand* dropdown matched '{left_operand_text}'. "
-        f"Check the console output above for the dropdowns and their option texts."
+        f"Check the console output above to see which pages/frames were inspected."
     )
 
 
