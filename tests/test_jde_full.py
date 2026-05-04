@@ -88,21 +88,26 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
     # JDE uses non-breaking spaces ( ) inside option text, so we normalize
     # them to regular spaces and collapse whitespace before substring-matching.
     js_match = """(needle) => {
+        // Normalize: split on any whitespace (including U+00A0 NBSP),
+        // rejoin with single spaces, lowercase. Avoids any regex-escape pitfalls.
         const norm = (s) => (s || '')
-            .replace(/\\u00a0/g, ' ')
-            .replace(/\\s+/g, ' ')
-            .trim()
+            .split(/[\\s\\u00A0]+/)
+            .filter(Boolean)
+            .join(' ')
             .toLowerCase();
 
         const target = norm(needle);
         const selects = document.querySelectorAll("select[id^='LeftOperand']");
+        const tried = [];
 
         for (const sel of selects) {
             const opt = sel.options[sel.selectedIndex];
-            const text = norm(opt ? opt.textContent : '');
+            const raw = opt ? opt.textContent : '';
+            const text = norm(raw);
+            tried.push({ id: sel.id, normalized: text, includes: text.includes(target) });
             if (text && text.includes(target)) {
                 const m = sel.id.match(/(\\d+)$/);
-                return { id: sel.id, n: m ? m[1] : null, strategy: "selected", text: text };
+                return { id: sel.id, n: m ? m[1] : null, strategy: "selected", text: text, target: target, tried: tried };
             }
         }
         for (const sel of selects) {
@@ -110,11 +115,11 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                 const text = norm(opt.textContent);
                 if (text && text.includes(target)) {
                     const m = sel.id.match(/(\\d+)$/);
-                    return { id: sel.id, n: m ? m[1] : null, strategy: "any-option", text: text };
+                    return { id: sel.id, n: m ? m[1] : null, strategy: "any-option", text: text, target: target, tried: tried };
                 }
             }
         }
-        return null;
+        return { id: null, n: null, strategy: "no-match", target: target, tried: tried };
     }"""
 
     # Collect ALL pages in the browser context (main + popups + new tabs)
@@ -165,7 +170,8 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
             # Try to match
             try:
                 match = await frame.evaluate(js_match, left_operand_text)
-            except Exception:
+            except Exception as exc:
+                print(f"  ↳ js_match failed: {exc}")
                 match = None
 
             if match and match.get("n"):
@@ -176,6 +182,16 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                     f"via {match['strategy']} (text: {match['text']!r}) → {selector}"
                 )
                 return selector
+
+            # Match failed in this frame — dump the normalized comparison so
+            # we can see why the substring check returned false
+            if match and match.get("strategy") == "no-match":
+                print(f"  ↳ No match in this frame. Normalized target: {match.get('target')!r}")
+                for t in match.get("tried", []):
+                    print(
+                        f"      {t['id']}: includes={t['includes']} "
+                        f"normalized={t['normalized']!r}"
+                    )
 
     raise LookupError(
         f"No LeftOperand* dropdown matched '{left_operand_text}'. "
