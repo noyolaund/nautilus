@@ -84,22 +84,31 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
         };
     }"""
 
-    # JS that searches across both selected option and any option
+    # JS that searches across both selected option and any option.
+    # JDE uses non-breaking spaces ( ) inside option text, so we normalize
+    # them to regular spaces and collapse whitespace before substring-matching.
     js_match = """(needle) => {
-        needle = (needle || '').trim().toLowerCase();
+        const norm = (s) => (s || '')
+            .replace(/\\u00a0/g, ' ')
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+
+        const target = norm(needle);
         const selects = document.querySelectorAll("select[id^='LeftOperand']");
+
         for (const sel of selects) {
             const opt = sel.options[sel.selectedIndex];
-            const text = (opt ? opt.textContent : '').trim().toLowerCase();
-            if (text && text.includes(needle)) {
+            const text = norm(opt ? opt.textContent : '');
+            if (text && text.includes(target)) {
                 const m = sel.id.match(/(\\d+)$/);
                 return { id: sel.id, n: m ? m[1] : null, strategy: "selected", text: text };
             }
         }
         for (const sel of selects) {
             for (const opt of sel.options) {
-                const text = (opt.textContent || '').trim().toLowerCase();
-                if (text && text.includes(needle)) {
+                const text = norm(opt.textContent);
+                if (text && text.includes(target)) {
                     const m = sel.id.match(/(\\d+)$/);
                     return { id: sel.id, n: m ? m[1] : null, strategy: "any-option", text: text };
                 }
