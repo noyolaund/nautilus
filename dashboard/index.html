@@ -273,7 +273,7 @@ async function stopBrowser() {
 
 let _selectedFile = null;
 
-function onFileSelected(event) {
+async function onFileSelected(event) {
     const file = event.target.files[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.xlsx')) {
