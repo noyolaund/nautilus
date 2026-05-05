@@ -96,20 +96,53 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
             .join(' ')
             .toLowerCase();
 
+        // Levenshtein distance — measures edit distance between two strings
+        const levenshtein = (a, b) => {
+            if (!a.length) return b.length;
+            if (!b.length) return a.length;
+            const m = []; for (let i = 0; i <= a.length; i++) m.push([i]);
+            for (let j = 1; j <= b.length; j++) m[0][j] = j;
+            for (let i = 1; i <= a.length; i++) {
+                for (let j = 1; j <= b.length; j++) {
+                    const cost = a[i-1] === b[j-1] ? 0 : 1;
+                    m[i][j] = Math.min(m[i-1][j]+1, m[i][j-1]+1, m[i-1][j-1]+cost);
+                }
+            }
+            return m[a.length][b.length];
+        };
+
+        // Compute similarity between target and the leading tokens of text
+        // (we only compare the same number of words as the target).
+        const fuzzyScore = (target, text) => {
+            const tWords = target.split(' ');
+            const xWords = text.split(' ').slice(0, tWords.length);
+            const tHead = tWords.join(' ');
+            const xHead = xWords.join(' ');
+            if (!tHead || !xHead) return 0;
+            const dist = levenshtein(tHead, xHead);
+            const maxLen = Math.max(tHead.length, xHead.length);
+            return 1 - dist / maxLen;
+        };
+
+        const FUZZY_THRESHOLD = 0.75;  // 75% similarity → accept
+
         const target = norm(needle);
         const selects = document.querySelectorAll("select[id^='LeftOperand']");
         const tried = [];
 
+        // Strategy 1: exact substring on selected option
         for (const sel of selects) {
             const opt = sel.options[sel.selectedIndex];
-            const raw = opt ? opt.textContent : '';
-            const text = norm(raw);
-            tried.push({ id: sel.id, normalized: text, includes: text.includes(target) });
+            const text = norm(opt ? opt.textContent : '');
+            const score = fuzzyScore(target, text);
+            tried.push({ id: sel.id, normalized: text, includes: text.includes(target), score: score.toFixed(2) });
             if (text && text.includes(target)) {
                 const m = sel.id.match(/(\\d+)$/);
                 return { id: sel.id, n: m ? m[1] : null, strategy: "selected", text: text, target: target, tried: tried };
             }
         }
+
+        // Strategy 2: exact substring on any option
         for (const sel of selects) {
             for (const opt of sel.options) {
                 const text = norm(opt.textContent);
@@ -119,7 +152,35 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                 }
             }
         }
-        return { id: null, n: null, strategy: "no-match", target: target, tried: tried };
+
+        // Strategy 3: fuzzy match on selected option (handles typos like "bussines" vs "business")
+        let bestScore = 0;
+        let bestSel = null;
+        let bestText = null;
+        for (const sel of selects) {
+            const opt = sel.options[sel.selectedIndex];
+            const text = norm(opt ? opt.textContent : '');
+            if (!text) continue;
+            const score = fuzzyScore(target, text);
+            if (score > bestScore) {
+                bestScore = score;
+                bestSel = sel;
+                bestText = text;
+            }
+        }
+        if (bestSel && bestScore >= FUZZY_THRESHOLD) {
+            const m = bestSel.id.match(/(\\d+)$/);
+            return {
+                id: bestSel.id,
+                n: m ? m[1] : null,
+                strategy: "fuzzy(" + bestScore.toFixed(2) + ")",
+                text: bestText,
+                target: target,
+                tried: tried,
+            };
+        }
+
+        return { id: null, n: null, strategy: "no-match", target: target, tried: tried, bestScore: bestScore.toFixed(2) };
     }"""
 
     # Collect ALL pages in the browser context (main + popups + new tabs)
@@ -186,10 +247,13 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
             # Match failed in this frame — dump the normalized comparison so
             # we can see why the substring check returned false
             if match and match.get("strategy") == "no-match":
-                print(f"  ↳ No match in this frame. Normalized target: {match.get('target')!r}")
+                print(
+                    f"  ↳ No match in this frame. Normalized target: {match.get('target')!r} "
+                    f"(best fuzzy score: {match.get('bestScore')})"
+                )
                 for t in match.get("tried", []):
                     print(
-                        f"      {t['id']}: includes={t['includes']} "
+                        f"      {t['id']}: includes={t['includes']} score={t.get('score')} "
                         f"normalized={t['normalized']!r}"
                     )
 
@@ -197,6 +261,35 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
         f"No LeftOperand* dropdown matched '{left_operand_text}'. "
         f"Check the console output above to see which pages/frames were inspected."
     )
+
+
+async def fill_jde_field(page: Page, selector: str, value: str, iframe: str = IFRAME) -> None:
+    """Robustly fill a JDE input field.
+
+    JDE's onkeyup/onblur handlers can swallow characters when Playwright's
+    .fill() fires synthetic events. Real keystrokes via press_sequentially
+    fire a proper keydown/keyup per character, then we Tab to blur and
+    commit the value.
+
+    Strips whitespace from the value to avoid stray leading/trailing spaces.
+    """
+    value = (str(value) if value is not None else "").strip()
+
+    frame = page.frame_locator(iframe) if iframe else page
+    locator = frame.locator(selector)
+
+    await locator.first.wait_for(state="visible", timeout=5000)
+    # 1. Click to focus
+    await locator.first.click()
+    # 2. Select all + delete to clear
+    await page.keyboard.press("Control+a")
+    await page.keyboard.press("Delete")
+    # 3. Type each character — fires real keyboard events
+    await locator.first.press_sequentially(value, delay=20)
+    # 4. Brief settle, then Tab to blur and commit
+    await asyncio.sleep(0.2)
+    await page.keyboard.press("Tab")
+    print(f"      Typed {value!r} into {selector}")
 
 
 async def login(runner: StepRunner) -> None:
@@ -331,12 +424,10 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     value="Literal",
                     selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
                 )
-                # Enter the literal value (the data column)
-                await runner.type(
-                    "Literal text field",
-                    value=str(data_value),
-                    selector="#LITtf", iframe=IFRAME, selector_strategy="css"
-                )
+                # Enter the literal value char-by-char with explicit Tab commit
+                # to avoid JDE's onkey handlers swallowing characters between
+                # iterations.
+                await fill_jde_field(page, "#LITtf", str(data_value))
                 # Apply
                 await runner.click("Select button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
                 await runner.screenshot()
