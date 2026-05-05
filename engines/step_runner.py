@@ -73,6 +73,11 @@ class StepRunner:
         StepRunner._step_counter += 1
         return f"S{StepRunner._step_counter:03d}"
 
+    @classmethod
+    def reset_step_counter(cls) -> None:
+        """Reset the step counter — called at the start of each iteration."""
+        cls._step_counter = 0
+
     def _make_step(
         self,
         action: ActionType,

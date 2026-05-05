@@ -252,8 +252,19 @@ def create_dashboard_app() -> FastAPI:
 
     @app.post("/api/session/stop")
     async def stop_browser():
-        """Close the browser."""
-        return await _session.stop()
+        """Close the browser and reset all dashboard state."""
+        global _suite_request, _data_context, _data_source_config
+        global _execution_results, _row_paths, _report_groups, _login_completed
+        result = await _session.stop()
+        # Wipe server-side state so the dashboard is ready for a fresh run
+        _suite_request = None
+        _data_context = None
+        _data_source_config = None
+        _execution_results = []
+        _row_paths = {}
+        _report_groups = []
+        _login_completed = False
+        return result
 
     @app.get("/api/session/status")
     async def session_status():
@@ -268,6 +279,37 @@ def create_dashboard_app() -> FastAPI:
         }
 
     # --- Data endpoints -----------------------------------------------------
+
+    @app.post("/api/data/sheets")
+    async def list_sheets(file: UploadFile = File(...)):
+        """Return the list of sheet names in the uploaded xlsx file.
+
+        Used to populate the sheet-name combo box in the dashboard before
+        the user picks which sheet to parse.
+        """
+        if not file.filename.lower().endswith(".xlsx"):
+            raise HTTPException(status_code=400, detail="Only .xlsx files accepted")
+
+        try:
+            content = await file.read()
+            if len(content) > 50 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to read upload: {exc}")
+
+        # Open the workbook from the in-memory bytes and list sheet names
+        try:
+            from openpyxl import load_workbook
+            from io import BytesIO
+            wb = load_workbook(BytesIO(content), read_only=True, data_only=True)
+            sheets = list(wb.sheetnames)
+            wb.close()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read xlsx: {exc}")
+
+        return {"filename": file.filename, "sheets": sheets}
 
     @app.post("/api/data/upload")
     async def upload_excel(

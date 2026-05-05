@@ -335,6 +335,8 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
     data_selections = report_group.get("data_selections", []) or []
     processing_options = report_group.get("processing_options", []) or []
 
+    # Reset the step counter so each iteration's logs start at S001
+    StepRunner.reset_step_counter()
     runner = StepRunner(page)
     label = f"{report.get('app_report', '?')}/{report.get('new_version', '?')}"
 
@@ -465,9 +467,24 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         return {"status": "pass", "error": None, "report": report}
 
     except StepError as e:
+        # Step-level failure (element not found, timeout, etc.) — stop this iteration,
+        # let the caller (dashboard) move on to the next one.
         print(f"[{label}] ✖ FAILED: {e}")
-        await page.screenshot(path=f"logs/jde_full_error_{report.get('app_report', 'unknown')}.png", full_page=True)
+        try:
+            await page.screenshot(path=f"logs/jde_full_error_{report.get('app_report', 'unknown')}.png", full_page=True)
+        except Exception:
+            pass
         return {"status": "fail", "error": str(e), "report": report}
+    except Exception as e:
+        # Anything unexpected — still don't crash the outer iteration loop
+        import traceback
+        print(f"[{label}] ✖ UNEXPECTED ERROR: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        try:
+            await page.screenshot(path=f"logs/jde_full_unexpected_{report.get('app_report', 'unknown')}.png", full_page=True)
+        except Exception:
+            pass
+        return {"status": "fail", "error": f"{type(e).__name__}: {e}", "report": report}
 
 
 # ---------------------------------------------------------------------------
