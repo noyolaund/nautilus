@@ -226,8 +226,22 @@ def create_dashboard_app() -> FastAPI:
 
     @app.post("/api/session/start")
     async def start_browser():
-        """Launch the browser."""
-        return await _session.start_browser()
+        """Launch the browser. Returns a clear error if launch fails."""
+        try:
+            return await _session.start_browser()
+        except Exception as exc:
+            import traceback
+            tb = traceback.format_exc()
+            _session.logger.error("Browser start failed: %s\n%s", exc, tb)
+            # Make sure any partially-initialized state is cleaned up
+            try:
+                await _session.stop()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to launch browser: {type(exc).__name__}: {exc}",
+            )
 
     @app.post("/api/session/login")
     async def login(request: Request):

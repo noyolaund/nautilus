@@ -164,9 +164,16 @@ async function startAndLogin() {
         // Start browser
         setStatus('st-browser', 'status-wait', 'Browser: Starting...');
         let res = await fetch(API + '/api/session/start', {method:'POST'});
-        let data = await res.json();
-        log('login-log', '> ' + data.message);
+        let data;
+        try {
+            data = await res.json();
+        } catch {
+            const text = await res.text().catch(() => '');
+            throw new Error(`HTTP ${res.status}: ${text.substring(0, 200)}`);
+        }
+        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
 
+        log('login-log', '> ' + (data.message || 'browser started'));
         if (data.status === 'error') throw new Error(data.message);
         setStatus('st-browser', 'status-ok', 'Browser: Running');
         document.getElementById('btn-stop').disabled = false;

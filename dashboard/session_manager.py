@@ -58,23 +58,40 @@ class SessionManager:
         return self._run_dir
 
     async def start_browser(self) -> dict[str, Any]:
-        """Launch a browser instance. Returns status."""
-        if self.is_active:
-            return {"status": "already_running", "message": "Browser is already open"}
+        """Launch a browser instance. Returns status.
 
-        self._pw = await async_playwright().start()
+        Always tears down any prior partial state first so a previous failed
+        attempt can't poison subsequent calls (e.g. self._pw set but self._page
+        is None because launch hung halfway).
+        """
+        # Force-close anything left over from a previous run
+        if self._page is not None or self._browser is not None or self._pw is not None:
+            self.logger.info("Cleaning up prior browser state before starting fresh")
+            await self.stop()
+
         browser_type = os.getenv("BROWSER_TYPE", "chromium")
-        # Dashboard always runs with visible browser — user needs to see it
         headless = False
         width = int(os.getenv("BROWSER_WIDTH", "1920"))
         height = int(os.getenv("BROWSER_HEIGHT", "1080"))
+        self.logger.info("Starting browser: %s %dx%d headless=%s", browser_type, width, height, headless)
 
-        launcher = getattr(self._pw, browser_type)
-        self._browser = await launcher.launch(headless=headless)
-        self._context = await self._browser.new_context(
-            viewport={"width": width, "height": height},
-        )
-        self._page = await self._context.new_page()
+        try:
+            self._pw = await async_playwright().start()
+            launcher = getattr(self._pw, browser_type)
+            self._browser = await launcher.launch(headless=headless)
+            self._context = await self._browser.new_context(
+                viewport={"width": width, "height": height},
+            )
+            self._page = await self._context.new_page()
+        except Exception:
+            # Roll back any partial state so the next call starts clean
+            self.logger.exception("Browser launch failed — rolling back partial state")
+            try:
+                await self.stop()
+            except Exception:
+                pass
+            raise
+
         self._is_logged_in = False
 
         # Create run directory
@@ -83,7 +100,7 @@ class SessionManager:
         self._run_dir.mkdir(parents=True, exist_ok=True)
         (self._run_dir / "screenshots").mkdir(exist_ok=True)
 
-        self.logger.info("Browser started: %s %dx%d headless=%s", browser_type, width, height, headless)
+        self.logger.info("Browser launched OK")
         return {"status": "started", "message": f"Browser launched ({browser_type} {width}x{height})"}
 
     async def run_login(self, suite_request: TestSuiteRequest) -> dict[str, Any]:

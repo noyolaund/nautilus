@@ -16,7 +16,7 @@ Or import and call programmatically (used by the dashboard):
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Add project root to Python path so imports work from any directory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -263,6 +263,150 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
     )
 
 
+async def find_processing_option_tab(page: Page, tab_name: str) -> Optional[str]:
+    """Find a Processing Options tab anchor by its visible text.
+
+    JDE Processing Options tabs are rendered as:
+        <a tabindex="-1" class="ActiveTabLink" href="javascript:onClick=ocPO('X')">Tax Report</a>
+
+    where X is the tab number starting from 0. We match by the anchor's
+    text content (whitespace + case-insensitive), tag the element so
+    Playwright can target it, and return the selector.
+    """
+    js = """(needle) => {
+        const norm = (s) => (s || '')
+            .split(/[\\s\\u00A0]+/)
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+        const target = norm(needle);
+        if (!target) return null;
+
+        // Primary: anchors used for JDE Processing Options tabs.
+        // Inactive tab class is usually "TabLink"; active is "ActiveTabLink".
+        const anchors = document.querySelectorAll(
+            "a.ActiveTabLink, a.TabLink, a[class*='TabLink']"
+        );
+
+        const candidates = [];
+        for (const a of anchors) {
+            const text = norm(a.textContent);
+            if (!text || !text.includes(target)) continue;
+            const rect = a.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            // Extract the tab number from href like javascript:onClick=ocPO('3')
+            const hrefMatch = (a.getAttribute('href') || '').match(/ocPO\\(['\\"]?(\\d+)['\\"]?\\)/);
+            const tabNumber = hrefMatch ? hrefMatch[1] : null;
+            candidates.push({ el: a, tabNumber: tabNumber, text: text });
+        }
+
+        if (candidates.length === 0) return null;
+
+        // Prefer the one whose text most closely matches the target.
+        // If multiple match, pick the shortest (closest match).
+        candidates.sort((a, b) => a.text.length - b.text.length);
+        const winner = candidates[0];
+        const a = winner.el;
+
+        if (!a.id) {
+            const slug = 'po-tab-' + target.replace(/\\s+/g, '-');
+            a.setAttribute('data-jde-tab-marker', slug);
+            return {
+                selector: "[data-jde-tab-marker='" + slug + "']",
+                tabNumber: winner.tabNumber,
+                text: winner.text,
+            };
+        }
+        return { selector: '#' + a.id, tabNumber: winner.tabNumber, text: winner.text };
+    }"""
+
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js, tab_name)
+        except Exception:
+            continue
+        if not result or not result.get("selector"):
+            continue
+        n = result.get("tabNumber")
+        if n is not None:
+            print(f"      Tab {tab_name!r} → tab #{n} (text: {result.get('text')!r})")
+        return result["selector"]
+    return None
+
+
+async def fill_nth_processing_input(
+    page: Page, n: int, value: str, iframe: str = IFRAME
+) -> None:
+    """Fill the Nth visible text input on the currently active Processing
+    Options tab (1-indexed)."""
+    value = (str(value) if value is not None else "").strip()
+    if not value:
+        return
+
+    # JS that finds all visible text inputs on the page and returns a
+    # marker id for the Nth one so Playwright can target it.
+    js = """({ n }) => {
+        const inputs = document.querySelectorAll(
+            "input[type='text'], input:not([type]), input[type='number']"
+        );
+        const visible = [];
+        for (const el of inputs) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            if (el.disabled || el.readOnly) continue;
+            visible.push(el);
+        }
+        if (n < 1 || n > visible.length) {
+            return { error: 'No input #' + n + ' (found ' + visible.length + ')',
+                     total: visible.length };
+        }
+        const target = visible[n - 1];
+        // Mark the element so we can locate it from Playwright
+        target.setAttribute('data-jde-po-marker', 'po-input-' + n);
+        return { selector: "[data-jde-po-marker='po-input-" + n + "']",
+                 total: visible.length };
+    }"""
+
+    frame_locator = page.frame_locator(iframe)
+    selected_frame = None
+    marker_selector = None
+
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js, {"n": n})
+        except Exception:
+            continue
+        if not result:
+            continue
+        if result.get("error"):
+            print(f"      Frame [{frame.name or frame.url[:40]}]: {result['error']}")
+            continue
+        marker_selector = result["selector"]
+        selected_frame = frame
+        print(f"      Found {result['total']} input(s); using #{n}")
+        break
+
+    if not selected_frame or not marker_selector:
+        raise RuntimeError(f"Could not find input #{n} in any frame")
+
+    # Use the marker selector from the iframe we tagged
+    locator = frame_locator.locator(marker_selector)
+    try:
+        await locator.first.wait_for(state="visible", timeout=5000)
+    except Exception:
+        # Fallback: locate directly on the matched frame
+        locator = selected_frame.locator(marker_selector)
+        await locator.first.wait_for(state="visible", timeout=5000)
+
+    await locator.first.click()
+    await page.keyboard.press("Control+a")
+    await page.keyboard.press("Delete")
+    await locator.first.press_sequentially(value, delay=20)
+    await asyncio.sleep(0.2)
+    await page.keyboard.press("Tab")
+    print(f"      Typed {value!r} into input #{n}")
+
+
 async def fill_jde_field(page: Page, selector: str, value: str, iframe: str = IFRAME) -> None:
     """Robustly fill a JDE input field.
 
@@ -442,24 +586,45 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             print(f"[{label}] Configuring {len(processing_options)} processing option(s)")
             await runner.click("Row Menu", selector="#C0_58", iframe=IFRAME, selector_strategy="css")
             await runner.click("Processing Options", selector="#HE0_118", iframe=IFRAME, selector_strategy="css")
+            # Wait for the Processing Options dialog to fully render its tabs
+            await asyncio.sleep(2)
 
             for idx, po in enumerate(processing_options, 1):
                 tab = po.get("tab", "")
-                option_number = po.get("option_number", "")
+                option_number_raw = po.get("option_number", "")
                 processing_value = po.get("processing_new", "")
-                print(f"[{label}]   PO {idx}: tab={tab}, opt={option_number}, value={processing_value}")
+                print(f"[{label}]   PO {idx}: tab={tab!r}, opt={option_number_raw!r}, value={processing_value!r}")
 
-                # Note: tab/option_number navigation may need clicks on specific elements
-                # — wire those in if you have selectors for tabs / option fields
-                if processing_value:
-                    await runner.type(
-                        "Processing option value field",
-                        value=str(processing_value),
-                        selector="#PO1T0", iframe=IFRAME, selector_strategy="css"
+                # Parse option_number as int
+                try:
+                    option_number = int(str(option_number_raw).strip())
+                except (ValueError, TypeError):
+                    print(f"      ✖ Invalid option_number: {option_number_raw!r}, skipping")
+                    continue
+
+                # 1. Click the tab by name
+                if tab:
+                    tab_selector = await find_processing_option_tab(page, tab)
+                    if not tab_selector:
+                        raise StepError(
+                            "Find Processing Options tab",
+                            f"Could not find tab named {tab!r}",
+                            None,
+                        )
+                    print(f"      Tab matched: {tab_selector}")
+                    await runner.click(
+                        f"Tab {tab!r}",
+                        selector=tab_selector, iframe=IFRAME, selector_strategy="css",
                     )
+                    # Give the tab content time to render
+                    await asyncio.sleep(1)
 
-            # Apply
-            await runner.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
+                # 2. Find the Nth text input on this tab and fill it
+                if processing_value:
+                    await fill_nth_processing_input(page, option_number, processing_value)
+
+            # Apply (OK button closes the Processing Options dialog)
+            await runner.click("OK button", selector="#hc_OK", iframe=IFRAME, selector_strategy="css")
 
         # ── Done ────────────────────────────────────────────────────────
         await runner.screenshot()
