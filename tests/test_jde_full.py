@@ -345,6 +345,11 @@ async def fill_nth_processing_input(
 
     # JS that finds all visible text inputs on the page and returns a
     # marker id for the Nth one so Playwright can target it.
+    #
+    # NOTE: the JDE left navigation panel always renders a search/fast-path
+    # text box that shows up as the first visible input. We skip it so the
+    # 1st Processing Options input on the tab is what the user really means
+    # by "option number 1".
     js = """({ n }) => {
         const inputs = document.querySelectorAll(
             "input[type='text'], input:not([type]), input[type='number']"
@@ -356,15 +361,24 @@ async def fill_nth_processing_input(
             if (el.disabled || el.readOnly) continue;
             visible.push(el);
         }
-        if (n < 1 || n > visible.length) {
-            return { error: 'No input #' + n + ' (found ' + visible.length + ')',
-                     total: visible.length };
+        // Drop the first visible input (the left-panel fast-path field)
+        const skipped = visible.length > 0 ? visible[0] : null;
+        const usable = visible.slice(1);
+
+        if (n < 1 || n > usable.length) {
+            return {
+                error: 'No input #' + n + ' (found ' + usable.length + ' after skipping the left-panel input)',
+                total: usable.length,
+                skipped: skipped ? (skipped.id || skipped.name || '(unnamed)') : null,
+            };
         }
-        const target = visible[n - 1];
-        // Mark the element so we can locate it from Playwright
+        const target = usable[n - 1];
         target.setAttribute('data-jde-po-marker', 'po-input-' + n);
-        return { selector: "[data-jde-po-marker='po-input-" + n + "']",
-                 total: visible.length };
+        return {
+            selector: "[data-jde-po-marker='po-input-" + n + "']",
+            total: usable.length,
+            skipped: skipped ? (skipped.id || skipped.name || '(unnamed)') : null,
+        };
     }"""
 
     frame_locator = page.frame_locator(iframe)
@@ -383,7 +397,11 @@ async def fill_nth_processing_input(
             continue
         marker_selector = result["selector"]
         selected_frame = frame
-        print(f"      Found {result['total']} input(s); using #{n}")
+        skipped_name = result.get("skipped")
+        print(
+            f"      Skipped first input ({skipped_name!r}); "
+            f"{result['total']} input(s) remaining, using #{n}"
+        )
         break
 
     if not selected_frame or not marker_selector:
@@ -624,7 +642,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     await fill_nth_processing_input(page, option_number, processing_value)
 
             # Apply (OK button closes the Processing Options dialog)
-            await runner.click("OK button", selector="#hc_OK", iframe=IFRAME, selector_strategy="css")
+            await runner.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
 
         # ── Done ────────────────────────────────────────────────────────
         await runner.screenshot()
