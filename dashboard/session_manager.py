@@ -75,10 +75,30 @@ class SessionManager:
         height = int(os.getenv("BROWSER_HEIGHT", "1080"))
         self.logger.info("Starting browser: %s %dx%d headless=%s", browser_type, width, height, headless)
 
+        # Launch flags that help bypass slow startup on corporate Windows
+        # (antivirus scanning, network probes, GPU init, etc.)
+        launch_args = [
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-sync",
+            "--disable-translate",
+            "--metrics-recording-only",
+            "--mute-audio",
+        ]
+
         try:
             self._pw = await async_playwright().start()
             launcher = getattr(self._pw, browser_type)
-            self._browser = await launcher.launch(headless=headless)
+            self._browser = await launcher.launch(
+                headless=headless,
+                args=launch_args,
+                chromium_sandbox=False,
+            )
             self._context = await self._browser.new_context(
                 viewport={"width": width, "height": height},
             )
