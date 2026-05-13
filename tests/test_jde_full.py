@@ -343,14 +343,12 @@ async def fill_nth_processing_input(
     if not value:
         return
 
-    # JS that finds all visible text inputs on the page and returns a
-    # marker id for the Nth one so Playwright can target it.
+    # JS that finds visible text inputs and returns a marker for the Nth one.
     #
-    # NOTE: the JDE left navigation panel always renders a search/fast-path
-    # text box that shows up as the first visible input. We skip it so the
-    # 1st Processing Options input on the tab is what the user really means
-    # by "option number 1".
-    js = """({ n }) => {
+    # Per-frame skipping: only skip the first input in frames that look like
+    # they host the left-panel fast-path field (not the JDE app frame). The
+    # PO input we want (e.g. P01T0) lives in e1menuAppIframe.
+    js = """({ n, skipFirst }) => {
         const inputs = document.querySelectorAll(
             "input[type='text'], input:not([type]), input[type='number']"
         );
@@ -361,15 +359,17 @@ async def fill_nth_processing_input(
             if (el.disabled || el.readOnly) continue;
             visible.push(el);
         }
-        // Drop the first visible input (the left-panel fast-path field)
-        const skipped = visible.length > 0 ? visible[0] : null;
-        const usable = visible.slice(1);
+
+        const skipped = (skipFirst && visible.length > 0) ? visible[0] : null;
+        const usable = skipFirst ? visible.slice(1) : visible;
 
         if (n < 1 || n > usable.length) {
             return {
-                error: 'No input #' + n + ' (found ' + usable.length + ' after skipping the left-panel input)',
+                error: 'No input #' + n + ' (found ' + usable.length + ' usable, ' + visible.length + ' total)',
                 total: usable.length,
+                visibleTotal: visible.length,
                 skipped: skipped ? (skipped.id || skipped.name || '(unnamed)') : null,
+                allIds: visible.map(el => el.id || el.name || '(unnamed)'),
             };
         }
         const target = usable[n - 1];
@@ -377,7 +377,9 @@ async def fill_nth_processing_input(
         return {
             selector: "[data-jde-po-marker='po-input-" + n + "']",
             total: usable.length,
+            visibleTotal: visible.length,
             skipped: skipped ? (skipped.id || skipped.name || '(unnamed)') : null,
+            targetId: target.id || target.name || '(unnamed)',
         };
     }"""
 
@@ -385,22 +387,46 @@ async def fill_nth_processing_input(
     selected_frame = None
     marker_selector = None
 
-    for frame in page.frames:
+    # Re-order the frames so we try the JDE app iframe first (no skip),
+    # then fall back to other frames with skip-first behavior. The PO input
+    # we want lives in e1menuAppIframe; the fast-path field is in its own
+    # iframe (E1MFastpathHiddenIframe / SilentOCLIFrame / etc.).
+    def _frame_priority(f):
+        name = (f.name or "").lower()
+        url = (f.url or "").lower()
+        if "e1menuappiframe" in name or "e1menuappiframe" in url:
+            return 0  # JDE app — search here first with NO skip
+        if "fastpath" in name or "fastpath" in url:
+            return 99  # left-panel — only useful as last resort
+        return 50
+
+    ordered_frames = sorted(page.frames, key=_frame_priority)
+
+    for frame in ordered_frames:
+        # No skip in the JDE app iframe; skip first elsewhere
+        skip_first = _frame_priority(frame) != 0
         try:
-            result = await frame.evaluate(js, {"n": n})
+            result = await frame.evaluate(js, {"n": n, "skipFirst": skip_first})
         except Exception:
             continue
         if not result:
             continue
+        frame_label = frame.name or frame.url[:40] or "main"
         if result.get("error"):
-            print(f"      Frame [{frame.name or frame.url[:40]}]: {result['error']}")
+            ids = result.get("allIds") or []
+            print(
+                f"      Frame [{frame_label}] skip_first={skip_first}: {result['error']}"
+                + (f" — ids: {ids}" if ids else "")
+            )
             continue
         marker_selector = result["selector"]
         selected_frame = frame
         skipped_name = result.get("skipped")
+        target_id = result.get("targetId")
         print(
-            f"      Skipped first input ({skipped_name!r}); "
-            f"{result['total']} input(s) remaining, using #{n}"
+            f"      Frame [{frame_label}] skip_first={skip_first}: "
+            f"{result['visibleTotal']} visible, "
+            f"skipped={skipped_name!r}, targeting #{n} (id={target_id!r})"
         )
         break
 
