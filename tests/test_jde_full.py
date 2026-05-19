@@ -14,6 +14,7 @@ Or import and call programmatically (used by the dashboard):
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -28,12 +29,12 @@ from playwright.async_api import async_playwright, Page
 from engines.step_runner import StepRunner, StepError
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — read from .env
 # ---------------------------------------------------------------------------
 
-JDE_URL = "http://e1w0000036.jnj.com:9222/jde/E1Menu.maf"
-USERNAME = "jnoyolam"
-PASSWORD = "AmdsamI8!"
+JDE_URL = os.getenv("JDE_URL", "")
+USERNAME = os.getenv("JDE_USERNAME", "")
+PASSWORD = os.getenv("JDE_PASSWORD", "")
 IFRAME = "iframe#e1menuAppIframe"
 
 
