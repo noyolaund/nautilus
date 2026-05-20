@@ -256,6 +256,20 @@ def create_dashboard_app() -> FastAPI:
         # Login suite has no _data_source by design; strip it if present anyway
         login_raw.pop("_data_source", None)
 
+        # Override the JDE URL with the value from .env so changing JDE_URL
+        # there takes effect without editing login_assert.json.
+        jde_url = os.getenv("JDE_URL", "").strip()
+        if jde_url:
+            for tc in login_raw.get("test_cases", []):
+                tc["base_url"] = jde_url
+                for step in tc.get("steps", []):
+                    if step.get("action") == "navigate":
+                        step.setdefault("data", {})
+                        step["data"]["value"] = jde_url
+            _session.logger.info("Login URL overridden from .env: %s", jde_url)
+        else:
+            _session.logger.warning("JDE_URL not set in .env — using login_assert.json value")
+
         login_suite = TestSuiteRequest(**login_raw)
         login_suite.headless = False
         _suite_request = login_suite
