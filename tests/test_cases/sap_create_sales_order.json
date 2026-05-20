@@ -5,6 +5,8 @@
   "browser": "chromium",
   "headless": false,
   "parallel": false,
+  "llm_provider": "openai",
+  "llm_model": "openai/gpt-4o",
   "test_cases": [
     {
       "test_id": "TC-SALES-ORDER-001",
@@ -12,7 +14,7 @@
       "description": "Create Sales Order using VA01 with valid data",
       "tags": ["sap", "sales_order", "happy_path"],
       "platform": "sap_gui",
-      "base_url": "https://erp.jnj.com/",
+      "base_url": "https://ec2-184-73-255-6.compute-1.amazonaws.com:44300/sap/bc/ui2/flp?_sap-hash=JTIzU2hlbGwtaG9tZQ#Shell-home",
       "preconditions": "User is logged into SAP and VA01 is accessible.",
       "priority": "high",
       "steps": [
@@ -21,7 +23,7 @@
           "name": "Navigate to SAP ERP",
           "action": "navigate",
           "data": {
-            "value": "https://erp.jnj.com/",
+            "value": "https://ec2-184-73-255-6.compute-1.amazonaws.com:44300/sap/bc/ui2/flp?_sap-hash=JTIzU2hlbGwtaG9tZQ#Shell-home",
             "sensitive": false
           },
           "timeout_ms": 30000,
@@ -33,11 +35,11 @@
           "name": "Enter username",
           "action": "type",
           "target": {
-            "description": "in the 'Email' field",
+            "description": "in the 'User' field",
             "selector_strategy": "ai"
           },
           "data": {
-            "value": "jnoyolam@its.jnj.com",
+            "value": "JNOYOLA",
             "sensitive": false
           },
           "timeout_ms": 30000,
@@ -46,11 +48,15 @@
         },
         {
           "step_id": "S003",
-          "name": "Login button",
-          "action": "click",
+          "name": "Enter password",
+          "action": "type",
           "target": {
-            "description": "in the 'Next' button",
+            "description": "in the 'Password' field",
             "selector_strategy": "ai"
+          },
+          "data": {
+            "value": "AmdsamIP75s!",
+            "sensitive": false
           },
           "timeout_ms": 30000,
           "retry_count": 1,
@@ -58,11 +64,11 @@
         },
         {
           "step_id": "S004",
-          "name": "Navigate to SAP ERP",
-          "action": "navigate",
-          "data": {
-            "value": "https://jnj-mt-pq.launchpad.cfapps.us10.hana.ondemand.com/site?siteId=934f71d8-c3fd-4761-b116-e78e123ef96b#Shell-home",
-            "sensitive": false
+          "name": "Login to SAP",
+          "action": "click",
+          "target": {
+            "description": "the blue emphasized submit button labeled 'Log On' below the password field",
+            "selector_strategy": "ai"
           },
           "timeout_ms": 30000,
           "retry_count": 1,
@@ -76,49 +82,46 @@
           "retry_count": 0
         },
         {
-          "step_id": "S003",
-          "name": "Search button",
+          "step_id": "S006",
+          "name": "Create Outgoing Invoices Tile",
           "action": "click",
           "target": {
-            "description": "in the 'Open Search' button",
+            "description": "the 'Create Outgoing Invoices' tile on the SAP Fiori Launchpad home screen",
             "selector_strategy": "ai"
           },
           "timeout_ms": 30000,
           "retry_count": 1,
-          "pre_wait_ms": 0
+          "pre_wait_ms": 1000
         },
         {
-          "step_id": "S003",
-          "name": "Open Create Sales Order - VA",
+          "step_id": "S007",
+          "name": "Wait for page to load",
+          "action": "wait",
+          "target": {
+            "description": "the 'Create Sales Order - VA' option to be visible",
+            "selector_strategy": "ai"
+          },
+          "timeout_ms": 10000,
+          "retry_count": 0,
+          "pre_wait_ms": 2000
+        },
+        {
+          "step_id": "S008",
+          "name": "Fill Amount field",
           "action": "type",
           "target": {
-            "description": "in the 'Search' field",
+            "description": "in the 'Amount' field",
             "selector_strategy": "ai"
           },
           "data": {
-            "value": "Create Sales Order - VA",
-            "sensitive": false
-          },
-          "timeout_ms": 30000,
-          "retry_count": 1
-        },
-        {
-          "step_id": "S004",
-          "name": "Fill Order Type",
-          "action": "type",
-          "target": {
-            "description": "in the 'Order Type' field",
-            "selector_strategy": "ai"
-          },
-          "data": {
-            "value": "ZIC",
+            "value": "2000",
             "sensitive": false
           },
           "timeout_ms": 20000,
           "retry_count": 1
         },
         {
-          "step_id": "S005",
+          "step_id": "S009",
           "name": "Fill Sales Organization",
           "action": "type",
           "target": {
@@ -133,7 +136,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S006",
+          "step_id": "S010",
           "name": "Fill Distribution Channel",
           "action": "type",
           "target": {
@@ -148,7 +151,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S007",
+          "step_id": "S011",
           "name": "Fill Division",
           "action": "type",
           "target": {
@@ -163,7 +166,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S008",
+          "step_id": "S012",
           "name": "Continue to sales order",
           "action": "click",
           "target": {
@@ -174,7 +177,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S009",
+          "step_id": "S013",
           "name": "Fill Sold-To Party",
           "action": "type",
           "target": {
@@ -189,7 +192,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S010",
+          "step_id": "S014",
           "name": "Fill Customer Reference",
           "action": "type",
           "target": {
@@ -204,7 +207,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S011",
+          "step_id": "S015",
           "name": "Enter Material",
           "action": "type",
           "target": {
@@ -219,7 +222,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S012",
+          "step_id": "S016",
           "name": "Enter Quantity",
           "action": "type",
           "target": {
@@ -234,7 +237,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S013",
+          "step_id": "S017",
           "name": "Save Sales Order",
           "action": "click",
           "target": {
@@ -245,7 +248,7 @@
           "retry_count": 1
         },
         {
-          "step_id": "S014",
+          "step_id": "S018",
           "name": "Capture Document Number",
           "action": "extract",
           "target": {
@@ -260,7 +263,7 @@
           "retry_count": 0
         },
         {
-          "step_id": "S015",
+          "step_id": "S019",
           "name": "Final screenshot",
           "action": "screenshot",
           "timeout_ms": 10000,

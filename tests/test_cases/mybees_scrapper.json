@@ -4,8 +4,8 @@
   "environment": "production",
   "browser": "chromium",
   "headless": false,
-  "llm_provider": "deepseek",
-  "llm_model": "deepseek-chat",
+  "llm_provider": "openai",
+  "llm_model": "openai/gpt-4o",
   "parallel": false,
 
   "_data_source": {

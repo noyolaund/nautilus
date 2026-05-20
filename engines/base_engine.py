@@ -237,6 +237,7 @@ class BaseEngine(ABC):
         height = int(os.getenv("BROWSER_HEIGHT", "1080"))
         context: BrowserContext = await browser.new_context(
             viewport={"width": width, "height": height},
+            ignore_https_errors=True,
         )
         page: Page = await context.new_page()
         page.set_default_timeout(platform_cfg.get("timeout_ms", 30_000))
