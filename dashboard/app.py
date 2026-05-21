@@ -256,19 +256,45 @@ def create_dashboard_app() -> FastAPI:
         # Login suite has no _data_source by design; strip it if present anyway
         login_raw.pop("_data_source", None)
 
-        # Override the JDE URL with the value from .env so changing JDE_URL
+        # Override URL + credentials with values from .env so changing them
         # there takes effect without editing login_assert.json.
         jde_url = os.getenv("JDE_URL", "").strip()
-        if jde_url:
-            for tc in login_raw.get("test_cases", []):
+        jde_user = os.getenv("JDE_USERNAME", "").strip()
+        jde_pass = os.getenv("JDE_PASSWORD", "").strip()
+
+        for tc in login_raw.get("test_cases", []):
+            if jde_url:
                 tc["base_url"] = jde_url
-                for step in tc.get("steps", []):
-                    if step.get("action") == "navigate":
-                        step.setdefault("data", {})
-                        step["data"]["value"] = jde_url
-            _session.logger.info("Login URL overridden from .env: %s", jde_url)
-        else:
-            _session.logger.warning("JDE_URL not set in .env — using login_assert.json value")
+            for step in tc.get("steps", []):
+                action = step.get("action")
+                name = (step.get("name") or "").lower()
+
+                # navigate → JDE URL
+                if action == "navigate" and jde_url:
+                    step.setdefault("data", {})
+                    step["data"]["value"] = jde_url
+
+                # type step whose name mentions "user" → username
+                elif action == "type" and "user" in name and jde_user:
+                    step.setdefault("data", {})
+                    step["data"]["value"] = jde_user
+
+                # type step whose name mentions "password" → password
+                elif action == "type" and "password" in name and jde_pass:
+                    step.setdefault("data", {})
+                    step["data"]["value"] = jde_pass
+
+        _session.logger.info(
+            "Login overrides from .env — url=%s user=%s pass=%s",
+            jde_url or "(not set)",
+            jde_user or "(not set)",
+            "****" if jde_pass else "(not set)",
+        )
+        if not jde_url or not jde_user or not jde_pass:
+            _session.logger.warning(
+                "Some JDE_* values missing in .env — login_assert.json values "
+                "will be used for the missing ones."
+            )
 
         login_suite = TestSuiteRequest(**login_raw)
         login_suite.headless = False
