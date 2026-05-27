@@ -4,8 +4,22 @@ REM  START — launch the LLM proxy and the dashboard in separate consoles
 REM ===========================================================================
 REM  Run setup.bat once before using this.
 REM ===========================================================================
-setlocal
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
+
+REM --- Pick the Python command saved by setup.bat (or detect one) ------------
+set "PY_CMD="
+if exist .python_cmd (
+    set /p PY_CMD=<.python_cmd
+)
+if not defined PY_CMD (
+    py -3 --version >nul 2>&1
+    if not errorlevel 1 (
+        set "PY_CMD=py -3"
+    ) else (
+        set "PY_CMD=python"
+    )
+)
 
 echo.
 echo ===========================================================================
@@ -43,14 +57,14 @@ echo   Opening two new console windows...
 echo.
 
 REM --- Start the proxy in its own console ------------------------------------
-start "JDE %PROXY_NAME%" cmd /k python main.py %PROXY_CMD%
+start "JDE %PROXY_NAME%" cmd /k !PY_CMD! main.py %PROXY_CMD%
 
 REM --- Give the proxy a few seconds to come up -------------------------------
 echo   Waiting for the proxy to start...
 timeout /t 5 /nobreak >nul
 
 REM --- Start the dashboard in its own console --------------------------------
-start "JDE Dashboard" cmd /k python main.py dashboard
+start "JDE Dashboard" cmd /k !PY_CMD! main.py dashboard
 
 REM --- Give the dashboard a moment, then open the browser --------------------
 echo   Waiting for the dashboard to start...
