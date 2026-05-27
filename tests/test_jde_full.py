@@ -534,8 +534,13 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         print(f"\n[{label}] === Starting JDE Full Path ===")
         print(f"[{label}] Data selections: {len(data_selections)}, Processing options: {len(processing_options)}")
 
-        await runner.click("the 'Submit Job' text")
-        await runner.screenshot()
+        await runner.type(
+            "Fast Path input",
+            value="bv",
+            selector="#TE_FAST_PATH_BOX",
+            selector_strategy="css",
+        )
+        await runner.key_press("Enter")
 
         # ── Batch Application ───────────────────────────────────────────
         await runner.type(
