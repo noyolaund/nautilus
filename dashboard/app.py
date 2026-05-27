@@ -379,16 +379,20 @@ def create_dashboard_app() -> FastAPI:
         if not _login_completed:
             raise HTTPException(status_code=400, detail="Run Start Browser & Login first.")
 
-        # Save uploaded file to the run dir (or a temp location)
-        run_dir = _session.run_dir or Path("logs")
-        run_dir.mkdir(parents=True, exist_ok=True)
-        saved_path = run_dir / f"uploaded_{file.filename}"
-
+        # Write the upload to a TEMP file (deleted after parsing) so the
+        # run-folder doesn't fill up with xlsx copies the user doesn't want.
+        import tempfile
         try:
             content = await file.read()
-            if len(content) > 50 * 1024 * 1024:  # 50 MB safety limit
+            if len(content) > 50 * 1024 * 1024:
                 raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-            saved_path.write_bytes(content)
+            tf = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+            try:
+                tf.write(content)
+                tf.flush()
+                saved_path = Path(tf.name)
+            finally:
+                tf.close()
         except HTTPException:
             raise
         except Exception as exc:
@@ -404,6 +408,12 @@ def create_dashboard_app() -> FastAPI:
             err = f"{type(exc).__name__}: {exc}"
             _session.logger.error("Excel parse error: %s\n%s", err, traceback.format_exc())
             raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {err}")
+        finally:
+            # Always remove the temp xlsx — the data is already in memory
+            try:
+                saved_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         global _report_groups
         _report_groups = []
@@ -485,10 +495,12 @@ def create_dashboard_app() -> FastAPI:
             print(f"   Data selections: {len(group['data_selections'])}, Processing options: {len(group['processing_options'])}")
 
             start = time.monotonic()
+            steps_raw = []  # list of StepResult objects from the runner
             try:
                 result = await run_jde_full(page, group)
                 status = result.get("status", "fail")
                 error = result.get("error")
+                steps_raw = result.get("steps") or []
             except Exception as exc:
                 import traceback
                 _session.logger.error("Iteration %d crashed: %s\n%s", i, exc, traceback.format_exc())
@@ -496,6 +508,39 @@ def create_dashboard_app() -> FastAPI:
                 error = f"Unhandled exception: {exc}"
 
             duration_ms = (time.monotonic() - start) * 1000
+
+            # Convert every StepResult into a JSON-friendly dict for the report
+            steps_dicts = []
+            total_tokens = 0
+            for s in steps_raw:
+                total_tokens += getattr(s, "tokens_used", 0) or 0
+                steps_dicts.append({
+                    "step_id": s.step_id,
+                    "name": s.name,
+                    "action": s.action.value if hasattr(s.action, "value") else str(s.action),
+                    "status": s.status.value if hasattr(s.status, "value") else str(s.status),
+                    "duration_ms": round(s.duration_ms or 0),
+                    "tokens_used": s.tokens_used or 0,
+                    "error": s.error_message,
+                    "selector": s.resolved_selector,
+                    "started_at": s.started_at.isoformat() if s.started_at else None,
+                    "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+                })
+
+            # If the iteration failed before any step ran (e.g. crash), surface
+            # the error as a synthetic step so the report still shows something.
+            if not steps_dicts and status == "fail":
+                steps_dicts.append({
+                    "step_id": "S000",
+                    "name": "Iteration crashed",
+                    "action": "custom",
+                    "status": "fail",
+                    "duration_ms": round(duration_ms),
+                    "tokens_used": 0,
+                    "error": error,
+                    "selector": None,
+                })
+
             _execution_results.append({
                 "iteration": i,
                 "total": total,
@@ -503,25 +548,11 @@ def create_dashboard_app() -> FastAPI:
                 "name": label,
                 "status": status,
                 "duration_ms": round(duration_ms),
-                "tokens": 0,
+                "tokens": total_tokens,
                 "screenshot": "",
                 "data_selections_count": len(group["data_selections"]),
                 "processing_options_count": len(group["processing_options"]),
-                "steps": [{
-                    "step_id": "S001",
-                    "name": label,
-                    "status": status,
-                    "duration_ms": round(duration_ms),
-                    "error": error,
-                    "selector": None,
-                }] if status == "fail" else [{
-                    "step_id": "S001",
-                    "name": label,
-                    "status": "pass",
-                    "duration_ms": round(duration_ms),
-                    "error": None,
-                    "selector": None,
-                }],
+                "steps": steps_dicts,
             })
 
         # Generate report
@@ -587,17 +618,37 @@ def _generate_execution_report() -> str:
     if not _suite_request or not _execution_results:
         return ""
 
+    from models.schemas import ActionType
+    from datetime import datetime as _dt
+
+    def _parse_action(value: str) -> ActionType:
+        try:
+            return ActionType(value)
+        except Exception:
+            return ActionType.CUSTOM
+
+    def _parse_ts(value):
+        if not value:
+            return None
+        try:
+            return _dt.fromisoformat(value)
+        except Exception:
+            return None
+
     test_results = []
     for r in _execution_results:
         steps = [
             StepResult(
                 step_id=s["step_id"],
                 name=s["name"],
-                action="click",  # simplified for report
+                action=_parse_action(s.get("action", "custom")),
                 status=s["status"],
                 duration_ms=s.get("duration_ms", 0),
+                tokens_used=s.get("tokens_used", 0),
                 error_message=s.get("error"),
                 resolved_selector=s.get("selector"),
+                started_at=_parse_ts(s.get("started_at")),
+                finished_at=_parse_ts(s.get("finished_at")),
             )
             for s in r.get("steps", [])
         ]
@@ -627,7 +678,7 @@ def _generate_execution_report() -> str:
     )
 
     run_dir = _session.run_dir or Path("logs")
-    return generate_report(suite_result, output_dir=str(run_dir))
+    return generate_report(suite_result, output_dir=str(run_dir), filename="report.html")
 
 
 dashboard_app = create_dashboard_app()

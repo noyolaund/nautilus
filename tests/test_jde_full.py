@@ -679,7 +679,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         # ── Done ────────────────────────────────────────────────────────
         await runner.screenshot()
         print(f"[{label}] ✓ Completed successfully")
-        return {"status": "pass", "error": None, "report": report}
+        return {
+            "status": "pass",
+            "error": None,
+            "report": report,
+            "steps": list(runner.results),
+        }
 
     except StepError as e:
         # Step-level failure (element not found, timeout, etc.) — stop this iteration,
@@ -689,7 +694,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             await page.screenshot(path=f"logs/jde_full_error_{report.get('app_report', 'unknown')}.png", full_page=True)
         except Exception:
             pass
-        return {"status": "fail", "error": str(e), "report": report}
+        return {
+            "status": "fail",
+            "error": str(e),
+            "report": report,
+            "steps": list(runner.results),
+        }
     except Exception as e:
         # Anything unexpected — still don't crash the outer iteration loop
         import traceback
@@ -699,7 +709,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             await page.screenshot(path=f"logs/jde_full_unexpected_{report.get('app_report', 'unknown')}.png", full_page=True)
         except Exception:
             pass
-        return {"status": "fail", "error": f"{type(e).__name__}: {e}", "report": report}
+        return {
+            "status": "fail",
+            "error": f"{type(e).__name__}: {e}",
+            "report": report,
+            "steps": list(runner.results),
+        }
 
 
 # ---------------------------------------------------------------------------

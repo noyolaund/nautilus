@@ -76,11 +76,17 @@ class BaseEngine(ABC):
         self.request = request
         self.token_tracker = TokenTracker()
 
-        # Build run folder: logs/MM-DD-YYYY_HH_MM_test_name/
-        base_log_dir = Path(os.getenv("LOG_DIR", "logs"))
-        ts = datetime.now().strftime("%m-%d-%Y_%H_%M")
-        safe_name = re.sub(r"[^\w\-]", "_", request.suite_name)[:60]
-        self._run_dir = base_log_dir / f"{ts}_{safe_name}"
+        # If JDE_RUN_DIR is set (by the dashboard's SessionManager), reuse it
+        # so all engines and StepRunners share ONE folder per session — no
+        # extra <timestamp>_<suite_name> dirs.
+        shared = os.getenv("JDE_RUN_DIR", "").strip()
+        if shared:
+            self._run_dir = Path(shared)
+        else:
+            base_log_dir = Path(os.getenv("LOG_DIR", "logs"))
+            ts = datetime.now().strftime("%m-%d-%Y_%H_%M")
+            safe_name = re.sub(r"[^\w\-]", "_", request.suite_name)[:60]
+            self._run_dir = base_log_dir / f"{ts}_{safe_name}"
         self._run_dir.mkdir(parents=True, exist_ok=True)
 
         self._run_id = f"{request.suite_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

@@ -68,6 +68,9 @@ class StepRunner:
         self._engine = HybridPlaywrightEngine(self._suite)
         self._tc = self._suite.test_cases[0]
         self.logger = self._engine.logger
+        # Every step executed via this runner is appended here so the
+        # dashboard can show the full breakdown per iteration.
+        self.results: list[StepResult] = []
 
     def _next_step_id(self) -> str:
         StepRunner._step_counter += 1
@@ -118,6 +121,7 @@ class StepRunner:
     async def _run(self, step: TestStep) -> StepResult:
         """Execute a step using the engine's retry wrapper."""
         result = await self._engine._run_step_with_retry(self._page, step, self._tc)
+        self.results.append(result)
         if result.status in (StepStatus.FAIL, StepStatus.ERROR):
             raise StepError(step.name, result.error_message or "Unknown error", result)
         return result
@@ -203,13 +207,16 @@ class StepRunner:
         )
         # check_error doesn't raise — we inspect the result
         result = await self._engine._run_step_with_retry(self._page, step, self._tc)
+        self.results.append(result)
         if result.status == StepStatus.FAIL:
             raise StepError("Check Error", result.error_message or "JDE error detected", result)
         return result
 
     async def screenshot(self, path: str = "", **kw) -> StepResult:
         step = self._make_step(ActionType.SCREENSHOT, "Screenshot", **kw)
-        return await self._engine._run_step_with_retry(self._page, step, self._tc)
+        result = await self._engine._run_step_with_retry(self._page, step, self._tc)
+        self.results.append(result)
+        return result
 
 
 class StepError(Exception):

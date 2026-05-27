@@ -114,13 +114,16 @@ class SessionManager:
 
         self._is_logged_in = False
 
-        # Create run directory
+        # Create the run directory — ONE per dashboard session.
+        # Every engine spawned during this session will reuse it via
+        # JDE_RUN_DIR (see BaseEngine.__init__).
         ts = datetime.now().strftime("%m-%d-%Y_%H_%M")
         self._run_dir = Path(os.getenv("LOG_DIR", "logs")) / f"{ts}_JDE_Dashboard"
         self._run_dir.mkdir(parents=True, exist_ok=True)
         (self._run_dir / "screenshots").mkdir(exist_ok=True)
+        os.environ["JDE_RUN_DIR"] = str(self._run_dir.resolve())
 
-        self.logger.info("Browser launched OK")
+        self.logger.info("Browser launched OK — run dir: %s", self._run_dir)
         return {"status": "started", "message": f"Browser launched ({browser_type} {width}x{height})"}
 
     async def run_login(self, suite_request: TestSuiteRequest) -> dict[str, Any]:
@@ -254,6 +257,8 @@ class SessionManager:
         self._pw = None
         self._engine = None
         self._is_logged_in = False
+        # Clear the shared run-dir env var so the next session creates a new one
+        os.environ.pop("JDE_RUN_DIR", None)
 
         self.logger.info("Browser session closed")
         return {"status": "stopped", "message": "Browser closed"}
