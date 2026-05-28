@@ -94,6 +94,7 @@ class StepRunner:
         clear_before: bool = False,
         timeout_ms: int = 10000,
         continue_on_failure: bool = False,
+        pre_wait_ms: int = 400,
     ) -> TestStep:
         target = None
         if description or selector:
@@ -116,6 +117,7 @@ class StepRunner:
             timeout_ms=timeout_ms,
             retry_count=1,
             continue_on_failure=continue_on_failure,
+            pre_wait_ms=pre_wait_ms,
         )
 
     async def _run(self, step: TestStep) -> StepResult:
