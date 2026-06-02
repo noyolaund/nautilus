@@ -544,11 +544,15 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             version_qbe_selector = "input[name='qbe0_1.0']"
             version_name_new = "#C0_20"
             version_name_title = "#C0_18"
+            row_menu_selector = "#C0_69"
+            processing_options_selector = "#HE0_19"
         else:
             fast_path_value = "bv"
             version_qbe_selector = "input[name='qbe0_1.1']"
             version_name_new = "#C0_17"
             version_name_title = "#C0_21"
+            row_menu_selector = "#C0_58"
+            processing_options_selector = "#HE0_118"
         print(f"[{label}] App type: {'P' if is_p_app else 'R'}  "
               f"fast_path={fast_path_value!r}  "
               f"qbe_selector={version_qbe_selector!r}")
@@ -611,7 +615,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         # ── Data Selection — loop once per entry ────────────────────────
         if data_selections:
             print(f"[{label}] Configuring {len(data_selections)} data selection(s)")
-            await runner.click("Row Menu", selector="#C0_58", iframe=IFRAME, selector_strategy="css")
+            await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
             await runner.click("Data Selection option", selector="#HE0_127", iframe=IFRAME, selector_strategy="css")
 
             for idx, sel in enumerate(data_selections, 1):
@@ -653,8 +657,8 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         # --- Processing Options -- loop once per entry
         if processing_options:
             print(f"[{label}] Configuring {len(processing_options)} processing option(s)")
-            await runner.click("Row Menu", selector="#C0_58", iframe=IFRAME, selector_strategy="css")
-            await runner.click("Processing Options", selector="#HE0_118", iframe=IFRAME, selector_strategy="css")
+            await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
+            await runner.click("Processing Options", selector=processing_options_selector, iframe=IFRAME, selector_strategy="css")
             # Wait for the Processing Options dialog to fully render its tabs
             await asyncio.sleep(2)
 
