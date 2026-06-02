@@ -534,9 +534,25 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         print(f"\n[{label}] === Starting JDE Full Path ===")
         print(f"[{label}] Data selections: {len(data_selections)}, Processing options: {len(processing_options)}")
 
+        # Branch on the App/Report prefix: R-* reports vs P-* applications
+        # use different Fast Path entry points and QBE filter columns.
+        app_report_value = str(report.get("app_report", "")).strip().upper()
+        is_p_app = app_report_value.startswith("P")
+
+        if is_p_app:
+            fast_path_value = "iv"
+            version_qbe_selector = "input[name='qbe0_1.0']"
+        else:
+            fast_path_value = "bv"
+            version_qbe_selector = "input[name='qbe0_1.1']"
+
+        print(f"[{label}] App type: {'P' if is_p_app else 'R'}  "
+              f"fast_path={fast_path_value!r}  "
+              f"qbe_selector={version_qbe_selector!r}")
+
         await runner.type(
             "Fast Path input",
-            value="bv",
+            value=fast_path_value,
             selector="#TE_FAST_PATH_BOX",
             selector_strategy="css",
         )
@@ -554,7 +570,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         await runner.type(
             "version QBE filter",
             value=report["current_version"],
-            selector="input[name='qbe0_1.1']", iframe=IFRAME, selector_strategy="css"
+            selector=version_qbe_selector, iframe=IFRAME, selector_strategy="css"
         )
         await runner.key_press("Enter")
 
