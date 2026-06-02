@@ -542,10 +542,13 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         if is_p_app:
             fast_path_value = "iv"
             version_qbe_selector = "input[name='qbe0_1.0']"
+            version_name_new = "#C0_20"
+            version_name_title = "#C0_18"
         else:
             fast_path_value = "bv"
             version_qbe_selector = "input[name='qbe0_1.1']"
-
+            version_name_new = "#C0_17"
+            version_name_title = "#C0_21"
         print(f"[{label}] App type: {'P' if is_p_app else 'R'}  "
               f"fast_path={fast_path_value!r}  "
               f"qbe_selector={version_qbe_selector!r}")
@@ -582,12 +585,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         await runner.type(
             "New Version field",
             value=report["new_version"],
-            selector="#C0_17", iframe=IFRAME, selector_strategy="css"
+            selector=version_name_new, iframe=IFRAME, selector_strategy="css"
         )
         await runner.type(
             "New Version Title",
             value=report.get("new_version_title", ""),
-            selector="#C0_21", iframe=IFRAME, selector_strategy="css"
+            selector=version_name_title, iframe=IFRAME, selector_strategy="css"
         )
 
         # ── Check for errors (e.g. version already exists) ──────────────
@@ -600,7 +603,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         await runner.type(
             "version QBE filter",
             value=report["new_version"],
-            selector="input[name='qbe0_1.1']", iframe=IFRAME, selector_strategy="css"
+            selector=version_qbe_selector, iframe=IFRAME, selector_strategy="css"
         )
         await runner.key_press("Enter")
         await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
