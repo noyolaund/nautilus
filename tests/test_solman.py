@@ -198,6 +198,47 @@ async def open_solman_session(pw: Playwright):
 # Login flow — runs AFTER the cert handshake has established the session
 # ---------------------------------------------------------------------------
 
+async def dump_page_frames(runner: StepRunner) -> None:
+    """List every frame on the current page and search each one for the
+    Saved Searches menu anchor. Prints a diagnostic so we can see which
+    frame the element really lives in.
+
+    Run this once and read the console output to learn the correct
+    iframe selector to use in IFRAME.
+    """
+    page = runner._page
+    print("\n=== FRAMES ON CURRENT PAGE ===")
+    for i, frame in enumerate(page.frames):
+        name = frame.name or "(no name)"
+        url = (frame.url or "")[:80]
+        # See if our target element is in this frame
+        try:
+            found = await frame.evaluate("""() => {
+                const a = document.querySelector("a[id$='SearchMenuAnchor1']");
+                return a ? {id: a.id, text: (a.textContent || '').trim()} : null;
+            }""")
+        except Exception as exc:
+            found = f"(evaluate failed: {exc})"
+        # Also count the iframes inside this frame for context
+        try:
+            iframe_info = await frame.evaluate("""() => {
+                return Array.from(document.querySelectorAll('iframe')).map(f => ({
+                    id: f.id, name: f.name, src: (f.src || '').slice(0, 60),
+                }));
+            }""")
+        except Exception:
+            iframe_info = []
+        print(f"  frame[{i}] name={name!r}")
+        print(f"      url={url!r}")
+        if iframe_info:
+            print(f"      contains {len(iframe_info)} iframe(s):")
+            for info in iframe_info[:8]:
+                print(f"        id={info['id']!r}  name={info['name']!r}  src={info['src']!r}")
+        if found:
+            print(f"      ✓ FOUND target: {found}")
+    print("=== END FRAMES ===\n")
+
+
 async def login(runner: StepRunner) -> None:
     """Navigate to Solman and complete the form-based login that follows
     the SLC certificate handshake (if any).
@@ -216,42 +257,22 @@ async def login(runner: StepRunner) -> None:
         await runner.screenshot()
         return
 
+    # Diagnostic: print every frame on the page and which one contains
+    # the Saved Searches anchor. Read the console to know what to put
+    # in IFRAME (or whether to pass iframe at all).
+    await dump_page_frames(runner)
+
     # Form-based fallback for environments that still show a login button +
     # username/password form after the cert prompt.
-    try:
-        await runner.click(
-            "Click the Login button",
-            selector="#LOGON_BUTTON", iframe=IFRAME, selector_strategy="css",
-        )
-    except Exception as exc:
-        print(f"  No #LOGON_BUTTON ({exc}); skipping that step")
-
-    try:
-        await runner.type(
-            "Fill the username (MS prompt)",
-            value=USERNAME,
-            selector="#i0116", selector_strategy="css",
-        )
-        await runner.click(
-            "the Next button",
-            selector="#idSIButton9", selector_strategy="css",
-        )
-    except Exception as exc:
-        print(f"  Microsoft username prompt not present ({exc}); skipping")
-
-    try:
-        await runner.type(
-            "Fill the username (JnJ form)",
-            value=USERNAME,
-            selector="#username", selector_strategy="css", sensitive=True,
-        )
-        await runner.type(
-            "Fill the password",
-            value=PASSWORD,
-            selector="#password", selector_strategy="css", sensitive=True,
-        )
-    except Exception as exc:
-        print(f"  JnJ username/password form not present ({exc}); skipping")
+    # NOTE: drop the iframe= argument — we don't know the real frame yet.
+    # If the diagnostic above prints "FOUND target" in frame[0] (main page),
+    # leave iframe off. Otherwise grab the matching frame's id/name and put
+    # the corresponding "iframe#<id>" or "iframe[name='<name>']" in IFRAME.
+    await runner.click(
+        "Click the Saved Searches menu",
+        selector='a[id$="SearchMenuAnchor1"]',
+        selector_strategy="css",
+    )
 
     await runner.screenshot()
 
