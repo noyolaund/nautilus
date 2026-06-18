@@ -93,23 +93,37 @@ class HybridPlaywrightEngine(BaseEngine):
     # ------------------------------------------------------------------
 
     async def _get_frame_context(self, page: Page, iframe_selector: Optional[str]):
-        """Return the FrameLocator context if iframe is specified, otherwise the page."""
+        """Return a FrameLocator context for the given iframe selector.
+
+        Supports three forms (try in order, fall back to main page on failure):
+
+          - comma-separated alternatives:   "iframe#A, iframe#B"
+            tries A; if not found, tries B
+          - chained nested iframes:         "iframe#A >>> iframe#B"
+            descends into A first, then into B (SAP CRM-style nesting)
+          - both combined:                  "iframe#A >>> iframe#X, iframe#A >>> iframe#Y"
+        """
         if not iframe_selector:
             return page
-        # Try each selector (comma-separated) until one matches
-        for sel in iframe_selector.split(","):
-            sel = sel.strip()
-            if not sel:
+
+        for alternative in iframe_selector.split(","):
+            alternative = alternative.strip()
+            if not alternative:
                 continue
+            # Walk each ">>>"-separated chain step
+            ctx = page
+            chain = [step.strip() for step in alternative.split(">>>") if step.strip()]
             try:
-                frame = page.frame_locator(sel)
-                # Verify the iframe exists by checking for any content
-                await frame.locator("body").wait_for(state="attached", timeout=2000)
-                self.logger.info("Iframe matched: %s", sel)
-                return frame
+                for step in chain:
+                    ctx = ctx.frame_locator(step)
+                    # Verify each nested iframe exists before descending further
+                    await ctx.locator("body").wait_for(state="attached", timeout=3000)
+                self.logger.info("Iframe matched: %s", alternative)
+                return ctx
             except Exception:
-                self.logger.info("Iframe not found: %s", sel)
+                self.logger.info("Iframe not found: %s", alternative)
                 continue
+
         self.logger.warning("No iframe matched, falling back to main page")
         return page
 
