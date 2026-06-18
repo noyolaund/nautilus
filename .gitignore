@@ -12,6 +12,7 @@ dist/
 build/
 .venv/
 venv/
+venv2/
 
 # Logs and reports (generated at runtime)
 logs/*.jsonl
