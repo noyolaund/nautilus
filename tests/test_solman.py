@@ -257,21 +257,26 @@ async def login(runner: StepRunner) -> None:
         await runner.screenshot()
         return
 
-    # Diagnostic: print every frame on the page and which one contains
-    # the Saved Searches anchor. Read the console to know what to put
-    # in IFRAME (or whether to pass iframe at all).
+    # Wait for the SAP CRM iframe to actually load its content.
+    # The <iframe id="CRMApplicationFrame"> tag exists in the DOM almost
+    # immediately, but its inner page is loaded lazily by the CRM UI.
+    # Until that inner navigation finishes, frame_locator("iframe#...")
+    # raises "Iframe not found". Wait for the inner frame to settle.
+    print("  Waiting for CRMApplicationFrame inner content to load...")
+    await runner._page.wait_for_load_state("networkidle", timeout=30000)
+    # Give the lazy-load a bit more headroom — SAP CRM does multiple
+    # nested loads after networkidle reports clean.
+    await asyncio.sleep(5)
+
+    # Diagnostic — should now show frame[1] = CRMApplicationFrame with
+    # the target element ✓ FOUND inside it.
     await dump_page_frames(runner)
 
-    # Form-based fallback for environments that still show a login button +
-    # username/password form after the cert prompt.
-    # NOTE: drop the iframe= argument — we don't know the real frame yet.
-    # If the diagnostic above prints "FOUND target" in frame[0] (main page),
-    # leave iframe off. Otherwise grab the matching frame's id/name and put
-    # the corresponding "iframe#<id>" or "iframe[name='<name>']" in IFRAME.
+    # Now click the Saved Searches menu inside the CRM iframe.
     await runner.click(
         "Click the Saved Searches menu",
         selector='a[id$="SearchMenuAnchor1"]',
-        selector_strategy="css",
+        iframe=IFRAME, selector_strategy="css",
     )
 
     await runner.screenshot()
