@@ -93,15 +93,20 @@ class HybridPlaywrightEngine(BaseEngine):
     # ------------------------------------------------------------------
 
     async def _get_frame_context(self, page: Page, iframe_selector: Optional[str]):
-        """Return a FrameLocator context for the given iframe selector.
+        """Return a Frame / FrameLocator / Page context for the given selector.
 
-        Supports three forms (try in order, fall back to main page on failure):
+        Supports several forms (try in order, fall back to main page on failure):
 
-          - comma-separated alternatives:   "iframe#A, iframe#B"
-            tries A; if not found, tries B
+          - flat name lookup:               "name=WorkAreaFrame1"
+            searches page.frames for a frame with that name. Works for
+            <frame> tags in framesets (SAP CRM) and any deeply nested iframe.
+          - flat URL-substring lookup:      "url~=workarea"
+            picks the frame whose URL contains the substring.
           - chained nested iframes:         "iframe#A >>> iframe#B"
-            descends into A first, then into B (SAP CRM-style nesting)
-          - both combined:                  "iframe#A >>> iframe#X, iframe#A >>> iframe#Y"
+            descends one CSS-selected iframe at a time (only walks <iframe>,
+            not <frame> framesets).
+          - comma-separated alternatives:   "name=X, iframe#A >>> iframe#B"
+            tries each in order until one works.
         """
         if not iframe_selector:
             return page
@@ -110,13 +115,33 @@ class HybridPlaywrightEngine(BaseEngine):
             alternative = alternative.strip()
             if not alternative:
                 continue
-            # Walk each ">>>"-separated chain step
+
+            # --- Flat name lookup --------------------------------------------
+            if alternative.lower().startswith("name="):
+                target = alternative.split("=", 1)[1].strip().strip("'\"")
+                frame = await self._wait_for_frame_by_name(page, target, timeout=10.0)
+                if frame is not None:
+                    self.logger.info("Frame matched by name: %s", target)
+                    return frame
+                self.logger.info("Frame not found by name: %s", target)
+                continue
+
+            # --- Flat URL-substring lookup -----------------------------------
+            if alternative.lower().startswith("url~="):
+                needle = alternative.split("=", 1)[1].strip().strip("'\"")
+                frame = await self._wait_for_frame_by_url(page, needle, timeout=10.0)
+                if frame is not None:
+                    self.logger.info("Frame matched by url substring: %s", needle)
+                    return frame
+                self.logger.info("Frame not found by url substring: %s", needle)
+                continue
+
+            # --- Chained CSS frame_locator -----------------------------------
             ctx = page
             chain = [step.strip() for step in alternative.split(">>>") if step.strip()]
             try:
                 for step in chain:
                     ctx = ctx.frame_locator(step)
-                    # Verify each nested iframe exists before descending further
                     await ctx.locator("body").wait_for(state="attached", timeout=3000)
                 self.logger.info("Iframe matched: %s", alternative)
                 return ctx
@@ -126,6 +151,30 @@ class HybridPlaywrightEngine(BaseEngine):
 
         self.logger.warning("No iframe matched, falling back to main page")
         return page
+
+    async def _wait_for_frame_by_name(self, page: Page, name: str, timeout: float = 10.0):
+        """Poll page.frames for a frame whose .name == name (case-insensitive)."""
+        import time
+        deadline = time.monotonic() + timeout
+        target = name.lower()
+        while time.monotonic() < deadline:
+            for frame in page.frames:
+                if (frame.name or "").lower() == target:
+                    return frame
+            await asyncio.sleep(0.25)
+        return None
+
+    async def _wait_for_frame_by_url(self, page: Page, needle: str, timeout: float = 10.0):
+        """Poll page.frames for a frame whose URL contains the substring."""
+        import time
+        deadline = time.monotonic() + timeout
+        target = needle.lower()
+        while time.monotonic() < deadline:
+            for frame in page.frames:
+                if target in (frame.url or "").lower():
+                    return frame
+            await asyncio.sleep(0.25)
+        return None
 
     # ------------------------------------------------------------------
     # Element resolution chain

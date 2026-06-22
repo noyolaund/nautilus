@@ -79,14 +79,16 @@ from engines.step_runner import StepRunner
 SOLMAN_URL = os.getenv("SOLMAN_URL", "").strip()
 USERNAME = os.getenv("SOLMAN_USERNAME", "").strip()
 PASSWORD = os.getenv("SOLMAN_PASSWORD", "").strip()
-# SAP CRM Web Client UI nests its iframes:
-#   page > iframe#CRMApplicationFrame > iframe[name='WorkAreaFrame1']
-# The Saved Searches anchor (and most CRM business content) lives in
-# WorkAreaFrame1. Use ">>>" to chain — the engine will descend one level
-# at a time. Comma-separate alternatives if the workarea name differs.
-IFRAME = (
-    "iframe#CRMApplicationFrame >>> iframe[name='WorkAreaFrame1']"
-)
+# SAP CRM Web Client UI uses a <frameset> with <frame> tags (NOT <iframe>)
+# for HeaderFrame / WorkAreaFrame1 / WorkAreaFrame2. CSS `iframe[...]`
+# selectors do NOT match <frame> elements, so the chained-iframe form fails.
+#
+# Solution: flat-name lookup — the engine scans page.frames (which lists
+# every frame regardless of nesting or <frame> vs <iframe>) for one whose
+# .name matches "WorkAreaFrame1". This works for all SAP CRM skins.
+#
+# To target the header bar instead, use "name=HeaderFrame".
+IFRAME = "name=WorkAreaFrame1"
 
 LOGIN_MODE = os.getenv("SOLMAN_LOGIN_MODE", "none").strip().lower()
 CERT_PATH = os.getenv("SOLMAN_CERT_PATH", "").strip()            # PFX/P12
