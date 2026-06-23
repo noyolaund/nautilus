@@ -637,6 +637,40 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     )
                     return {"status": "fail", "error": str(exc), "report": report}
 
+                # Extract the row number from right_operand_sel ("#RightOperand4" → "4")
+                # — same number is used for #Select{N} when removing the row.
+                import re as _re
+                _row_match = _re.search(r"(\d+)$", right_operand_sel)
+                row_number = _row_match.group(1) if _row_match else None
+
+                # ── REMOVE branch ────────────────────────────────────────
+                # If the Excel "New" value (column H) is "REMOVE" (any case),
+                # mark the matching row's checkbox and click Delete instead
+                # of filling in a Literal value.
+                if str(data_value).strip().upper() == "REMOVE":
+                    if not row_number:
+                        raise StepError(
+                            "REMOVE data selection",
+                            f"Could not extract row number from {right_operand_sel!r}",
+                            None,
+                        )
+                    select_checkbox = f"#Select{row_number}"
+                    print(
+                        f"[{label}]   ↳ REMOVE mode: checking {select_checkbox} "
+                        f"then clicking #hc952 (Delete)"
+                    )
+                    await runner.click(
+                        f"Select{row_number} checkbox",
+                        selector=select_checkbox, iframe=IFRAME, selector_strategy="css",
+                    )
+                    await runner.click(
+                        "Delete button",
+                        selector="#hc952", iframe=IFRAME, selector_strategy="css",
+                    )
+                    await runner.screenshot()
+                    continue
+
+                # ── Default branch — add/update a Literal condition ──────
                 # Pick "Literal" from the matching right operand dropdown
                 await runner.select(
                     "Right Operand dropdown",
