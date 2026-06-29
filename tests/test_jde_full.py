@@ -264,6 +264,124 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
     )
 
 
+async def is_data_selection_row_locked(page: Page, row_number) -> bool:
+    """Check whether the Data Selection row #N is locked.
+
+    JDE renders a locked row as:
+        <input type="CHECKBOX" id="Select1" ...>
+        <img src="/jde/img/Locked1.gif" alt="Lock" ...>
+
+    Unlocked row is just the checkbox with no <img> sibling.
+    We detect the lock via the CSS adjacent-sibling combinator:
+        #Select{N} + img[src*="Locked"]
+    which matches only when the very next element after the checkbox
+    is an <img> whose src contains the word "Locked".
+
+    Returns True if locked, False if unlocked (or row not found).
+    """
+    n = str(row_number).strip()
+    if not n:
+        return False
+
+    js = """(n) => {
+        const cb = document.querySelector('#Select' + n);
+        if (!cb) return { found: false };
+        // Adjacent-sibling match — most reliable signal of a lock icon
+        const lockImg = document.querySelector('#Select' + n + " + img[src*='Locked']");
+        if (lockImg) {
+            return { found: true, locked: true, src: lockImg.getAttribute('src') };
+        }
+        // Defensive fallback: look at the next sibling directly.
+        // Some skins render the <img> with a different case or attribute name.
+        const next = cb.nextElementSibling;
+        const src = (next && next.getAttribute('src')) || '';
+        const looksLocked = next && next.tagName === 'IMG' && /locked/i.test(src);
+        return {
+            found: true,
+            locked: !!looksLocked,
+            src: src,
+            nextTag: next ? next.tagName : null,
+        };
+    }"""
+
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js, n)
+        except Exception:
+            continue
+        if not result or not result.get("found"):
+            continue
+        if result.get("locked"):
+            print(f"      🔒 Row #Select{n} is LOCKED (src={result.get('src')!r})")
+            return True
+        print(f"      🔓 Row #Select{n} is unlocked")
+        return False
+
+    print(f"      ⚠ Row #Select{n} not found in any frame")
+    return False
+
+
+async def unlock_data_selection_row(runner: StepRunner, row_number) -> None:
+    """Unlock a Data Selection row so its fields become editable.
+
+    Sequence:
+      1. Mark #Select{N} checkbox (selects the row for the Advanced dialog)
+      2. Click the "Advanced" link
+      3. Toggle the "Locked" checkbox (currently checked → unchecked)
+      4. Click OK (#hc_Select) to apply
+    """
+    n = str(row_number).strip()
+    print(f"      🔓 Unlocking row #Select{n} via Advanced dialog")
+    await runner.click(
+        f"Select{n} checkbox (pre-unlock)",
+        selector=f"#Select{n}", iframe=IFRAME, selector_strategy="css",
+    )
+    await runner.click(
+        "Advanced link",
+        selector="a[href*='advanced()']", iframe=IFRAME, selector_strategy="css",
+    )
+    await runner.click(
+        "Locked checkbox (toggle off)",
+        selector="input[type='checkbox'][name='Locked']",
+        iframe=IFRAME, selector_strategy="css",
+    )
+    await runner.click(
+        "Advanced OK button",
+        selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+    )
+
+
+async def lock_data_selection_row(runner: StepRunner, row_number) -> None:
+    """Re-lock a Data Selection row after editing.
+
+    Sequence:
+      1. Mark #Select{N} checkbox again (selection may have been cleared
+         by the previous Apply)
+      2. Click the "Advanced" link
+      3. Toggle the "Locked" checkbox (currently unchecked → checked)
+      4. Click OK (#hc_Select) to apply
+    """
+    n = str(row_number).strip()
+    print(f"      🔒 Re-locking row #Select{n} via Advanced dialog")
+    await runner.click(
+        f"Select{n} checkbox (pre-lock)",
+        selector=f"#Select{n}", iframe=IFRAME, selector_strategy="css",
+    )
+    await runner.click(
+        "Advanced link",
+        selector="a[href*='advanced()']", iframe=IFRAME, selector_strategy="css",
+    )
+    await runner.click(
+        "Locked checkbox (toggle on)",
+        selector="input[type='checkbox'][name='Locked']",
+        iframe=IFRAME, selector_strategy="css",
+    )
+    await runner.click(
+        "Advanced OK button",
+        selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+    )
+
+
 async def find_processing_option_tab(page: Page, tab_name: str) -> Optional[str]:
     """Find a Processing Options tab anchor by its visible text.
 
@@ -643,10 +761,23 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 _row_match = _re.search(r"(\d+)$", right_operand_sel)
                 row_number = _row_match.group(1) if _row_match else None
 
+                # Detect whether this row is locked. If so, we open the
+                # Advanced dialog and toggle the Locked checkbox off before
+                # editing, then toggle it back on after (unless we deleted
+                # the row, in which case there's nothing to re-lock).
+                row_is_locked = False
+                if row_number:
+                    row_is_locked = await is_data_selection_row_locked(page, row_number)
+
+                # Unlock if needed so the next steps can mutate the row.
+                if row_is_locked and row_number:
+                    await unlock_data_selection_row(runner, row_number)
+
                 # ── REMOVE branch ────────────────────────────────────────
                 # If the Excel "New" value (column H) is "REMOVE" (any case),
                 # mark the matching row's checkbox and click Delete instead
-                # of filling in a Literal value.
+                # of filling in a Literal value. The row is gone after this,
+                # so no re-lock is needed.
                 if str(data_value).strip().upper() == "REMOVE":
                     if not row_number:
                         raise StepError(
@@ -684,6 +815,11 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 # Apply
                 await runner.click("Select button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
                 await runner.screenshot()
+
+                # Restore the lock state — only for the edit branch.
+                # (REMOVE already `continue`d above.)
+                if row_is_locked and row_number:
+                    await lock_data_selection_row(runner, row_number)
 
             # Close the Data Selections dialog
             await runner.click("Close Data Selection dialog", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
