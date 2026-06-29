@@ -267,17 +267,18 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
 async def is_data_selection_row_locked(page: Page, row_number) -> bool:
     """Check whether the Data Selection row #N is locked.
 
-    JDE renders a locked row as:
+    Every row has an <img> next to its checkbox:
         <input type="CHECKBOX" id="Select1" ...>
-        <img src="/jde/img/Locked1.gif" alt="Lock" ...>
+        <img src="/jde/img/Locked1.gif"  ...>     → LOCKED
+        <img src="/jde/img/blank.gif"    ...>     → unlocked
 
-    Unlocked row is just the checkbox with no <img> sibling.
-    We detect the lock via the CSS adjacent-sibling combinator:
-        #Select{N} + img[src*="Locked"]
-    which matches only when the very next element after the checkbox
-    is an <img> whose src contains the word "Locked".
+    Heuristic:
+      - First <img> sibling whose src contains "blank"  → unlocked
+      - Any other <img> src                              → LOCKED
+      - No <img> at all within 5 siblings                → unlocked (default)
 
-    Returns True if locked, False if unlocked (or row not found).
+    Dumps every nearby sibling so we can see what's actually there when the
+    detection disagrees with reality.
     """
     n = str(row_number).strip()
     if not n:
@@ -285,37 +286,78 @@ async def is_data_selection_row_locked(page: Page, row_number) -> bool:
 
     js = """(n) => {
         const cb = document.querySelector('#Select' + n);
-        if (!cb) return { found: false };
-        // Adjacent-sibling match — most reliable signal of a lock icon
-        const lockImg = document.querySelector('#Select' + n + " + img[src*='Locked']");
-        if (lockImg) {
-            return { found: true, locked: true, src: lockImg.getAttribute('src') };
+        if (!cb) {
+            return { found: false, verdict: 'checkbox #Select' + n + ' not found' };
         }
-        // Defensive fallback: look at the next sibling directly.
-        // Some skins render the <img> with a different case or attribute name.
-        const next = cb.nextElementSibling;
-        const src = (next && next.getAttribute('src')) || '';
-        const looksLocked = next && next.tagName === 'IMG' && /locked/i.test(src);
+
+        // Walk up to 5 element siblings after the checkbox and capture details
+        const siblings = [];
+        let s = cb.nextElementSibling;
+        let i = 0;
+        while (s && i < 5) {
+            siblings.push({
+                idx: i,
+                tag: s.tagName,
+                src: s.getAttribute('src'),
+                alt: s.getAttribute('alt'),
+                cls: s.getAttribute('class'),
+                text: (s.textContent || '').trim().slice(0, 40),
+            });
+            s = s.nextElementSibling;
+            i++;
+        }
+
+        const firstImg = siblings.find(x => x.tag === 'IMG');
+        let locked = false;
+        let verdict;
+
+        if (!firstImg) {
+            verdict = 'no <img> within 5 siblings — defaulting to unlocked';
+        } else {
+            const src = (firstImg.src || '').toLowerCase();
+            if (src.includes('blank')) {
+                verdict = 'UNLOCKED (blank.gif): src=' + firstImg.src;
+                locked = false;
+            } else {
+                // Non-blank img (Locked1.gif, Locked2.gif, etc.) → locked
+                verdict = 'LOCKED (non-blank img): src=' + firstImg.src;
+                locked = true;
+            }
+        }
+
         return {
             found: true,
-            locked: !!looksLocked,
-            src: src,
-            nextTag: next ? next.tagName : null,
+            checkboxId: cb.id,
+            siblings: siblings,
+            firstImg: firstImg || null,
+            locked: locked,
+            verdict: verdict,
         };
     }"""
 
-    for frame in page.frames:
+    for frame_idx, frame in enumerate(page.frames):
+        frame_label = frame.name or (frame.url[:50] if frame.url else "main")
         try:
             result = await frame.evaluate(js, n)
         except Exception:
             continue
         if not result or not result.get("found"):
             continue
-        if result.get("locked"):
-            print(f"      🔒 Row #Select{n} is LOCKED (src={result.get('src')!r})")
-            return True
-        print(f"      🔓 Row #Select{n} is unlocked")
-        return False
+
+        # Verbose diagnostic: show every nearby sibling so we can see what's
+        # actually rendered next to the checkbox.
+        locked = bool(result.get("locked"))
+        icon = "🔒" if locked else "🔓"
+        print(f"      🔎 Row #Select{n} found in frame[{frame_idx}] [{frame_label}]")
+        print(f"         verdict: {result.get('verdict')}")
+        for sib in result.get("siblings") or []:
+            print(
+                f"         sibling[{sib['idx']}]: <{(sib.get('tag') or '').lower()}> "
+                f"src={sib.get('src')!r} alt={sib.get('alt')!r} "
+                f"class={sib.get('cls')!r} text={sib.get('text')!r}"
+            )
+        print(f"      {icon} → {'LOCKED' if locked else 'unlocked'}")
+        return locked
 
     print(f"      ⚠ Row #Select{n} not found in any frame")
     return False
