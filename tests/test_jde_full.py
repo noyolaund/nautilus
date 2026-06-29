@@ -43,15 +43,21 @@ IFRAME = "iframe#e1menuAppIframe"
 # ---------------------------------------------------------------------------
 
 async def find_right_operand_selector(page: Page, left_operand_text: str) -> str:
-    """Scan every page (including popups) and every frame for #LeftOperand*
-    dropdowns. Return the matching #RightOperandN selector for the row whose
-    Left Operand option text contains *left_operand_text*.
+    """Find the data-selection row whose Left Operand matches *left_operand_text*
+    and return the matching '#RightOperand{N}' selector.
 
-    JDE often opens "Data Selection" in a popup window — so we need to walk
-    `context.pages` and not just the original page's frames.
+    Works for both row layouts:
+      - Unlocked row: matches the SELECTED option text of LeftOperand{N}
+      - Locked row:   matches the static text in any <td> cell
+                      (locked rows don't render a LeftOperand select at all)
 
-    Raises LookupError if no dropdown matches — execution will stop for the
-    current iteration so the user can inspect what's on the page.
+    Matching is whitespace-normalized substring (handles \\xa0 NBSP), with a
+    Levenshtein fuzzy fallback for typos. Strategy "any-option" (any option
+    of any dropdown) is NOT used here because every LeftOperand dropdown
+    holds the same 54 field-name options, so it would always match the first
+    dropdown — producing wrong row numbers.
+
+    Raises LookupError if nothing matches.
     """
     if not left_operand_text:
         raise LookupError("Empty left_operand value — cannot determine RightOperand selector")
@@ -143,45 +149,104 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
             }
         }
 
-        // Strategy 2: exact substring on any option
-        for (const sel of selects) {
-            for (const opt of sel.options) {
-                const text = norm(opt.textContent);
-                if (text && text.includes(target)) {
-                    const m = sel.id.match(/(\\d+)$/);
-                    return { id: sel.id, n: m ? m[1] : null, strategy: "any-option", text: text, target: target, tried: tried };
+        // Strategy 2: row-cell text match (handles LOCKED rows where the
+        // field name is rendered as static <td> text and no LeftOperand{N}
+        // select exists). We walk every #Select{N} checkbox, look at its
+        // <tr>, and match the EFFECTIVE text of each <td>:
+        //   - <td> with a <select>: the selected option's text
+        //   - <td> with no <select>: its raw textContent
+        // This avoids matching the 54 unrelated options of LeftOperand
+        // dropdowns (every dropdown has every field name as an option).
+        const cellEffectiveText = (td) => {
+            const sels = td.querySelectorAll('select');
+            if (sels.length > 0) {
+                const parts = [];
+                for (const sel of sels) {
+                    const opt = sel.options[sel.selectedIndex];
+                    if (opt) parts.push(opt.textContent || '');
+                }
+                return norm(parts.join(' '));
+            }
+            return norm(td.textContent);
+        };
+        const rowChecks = [];
+        const rowCheckboxes = document.querySelectorAll(
+            "input[type='checkbox'][id^='Select']"
+        );
+        for (const cb of rowCheckboxes) {
+            const idMatch = cb.id.match(/^Select(\\d+)$/);
+            if (!idMatch) continue;
+            const n = idMatch[1];
+            const row = cb.closest('tr');
+            if (!row) continue;
+            const tds = Array.from(row.querySelectorAll('td'));
+            const cellTexts = tds.map(td => cellEffectiveText(td));
+            rowChecks.push({ n: n, cellTexts: cellTexts });
+            const matchIdx = cellTexts.findIndex(t => t && t.includes(target));
+            if (matchIdx !== -1) {
+                return {
+                    id: '#Select' + n,
+                    n: n,
+                    strategy: "row-cell(td[" + matchIdx + "])",
+                    text: cellTexts[matchIdx],
+                    target: target,
+                    tried: tried,
+                    rowChecks: rowChecks.map(r => ({
+                        n: r.n,
+                        cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60))
+                    })),
+                };
+            }
+        }
+
+        // Strategy 3: fuzzy match on row cells (handles typos in the Excel
+        // value — e.g. "Bussines Unit" vs "Business Unit" — and works for
+        // both locked and unlocked rows since we use the same cell-text
+        // extraction as Strategy 2).
+        let bestScore = 0;
+        let bestRowN = null;
+        let bestCol = null;
+        let bestText = null;
+        for (const r of rowChecks) {
+            for (let i = 0; i < r.cellTexts.length; i++) {
+                const text = r.cellTexts[i];
+                if (!text) continue;
+                const score = fuzzyScore(target, text);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestRowN = r.n;
+                    bestCol = i;
+                    bestText = text;
                 }
             }
         }
-
-        // Strategy 3: fuzzy match on selected option (handles typos like "bussines" vs "business")
-        let bestScore = 0;
-        let bestSel = null;
-        let bestText = null;
-        for (const sel of selects) {
-            const opt = sel.options[sel.selectedIndex];
-            const text = norm(opt ? opt.textContent : '');
-            if (!text) continue;
-            const score = fuzzyScore(target, text);
-            if (score > bestScore) {
-                bestScore = score;
-                bestSel = sel;
-                bestText = text;
-            }
-        }
-        if (bestSel && bestScore >= FUZZY_THRESHOLD) {
-            const m = bestSel.id.match(/(\\d+)$/);
+        if (bestRowN != null && bestScore >= FUZZY_THRESHOLD) {
             return {
-                id: bestSel.id,
-                n: m ? m[1] : null,
-                strategy: "fuzzy(" + bestScore.toFixed(2) + ")",
+                id: '#Select' + bestRowN,
+                n: bestRowN,
+                strategy: "fuzzy(" + bestScore.toFixed(2) + ", td[" + bestCol + "])",
                 text: bestText,
                 target: target,
                 tried: tried,
+                rowChecks: rowChecks.map(r => ({
+                    n: r.n,
+                    cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60))
+                })),
             };
         }
 
-        return { id: null, n: null, strategy: "no-match", target: target, tried: tried, bestScore: bestScore.toFixed(2) };
+        return {
+            id: null,
+            n: null,
+            strategy: "no-match",
+            target: target,
+            tried: tried,
+            bestScore: bestScore.toFixed(2),
+            rowChecks: rowChecks.map(r => ({
+                n: r.n,
+                cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60))
+            })),
+        };
     }"""
 
     # Collect ALL pages in the browser context (main + popups + new tabs)
@@ -245,8 +310,8 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                 )
                 return selector
 
-            # Match failed in this frame — dump the normalized comparison so
-            # we can see why the substring check returned false
+            # Match failed in this frame — dump the normalized comparison
+            # plus the per-row cell texts so we can see why no row matched.
             if match and match.get("strategy") == "no-match":
                 print(
                     f"  ↳ No match in this frame. Normalized target: {match.get('target')!r} "
@@ -254,8 +319,12 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                 )
                 for t in match.get("tried", []):
                     print(
-                        f"      {t['id']}: includes={t['includes']} score={t.get('score')} "
-                        f"normalized={t['normalized']!r}"
+                        f"      [LeftOperand] {t['id']}: includes={t['includes']} "
+                        f"score={t.get('score')} normalized={t['normalized']!r}"
+                    )
+                for r in match.get("rowChecks", []):
+                    print(
+                        f"      [Row Select{r['n']}] cells={r['cellTexts']}"
                     )
 
     raise LookupError(
