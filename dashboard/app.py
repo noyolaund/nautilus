@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -20,8 +21,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.session_manager import SessionManager
-from data_provider.excel_parser import ExcelParser
-from data_provider.data_models import DataSourceConfig, DataContext, DataRow
 from data_provider.template_resolver import TemplateResolver
 from models.schemas import TestSuiteRequest
 from reports.html_report import generate_report
@@ -39,11 +38,9 @@ from models.schemas import (
 
 _session = SessionManager()
 _suite_request: Optional[TestSuiteRequest] = None
-_data_context: Optional[DataContext] = None
-_data_source_config: Optional[DataSourceConfig] = None
 _execution_results: list[dict] = []
 _row_paths: dict[int, str] = {}  # row_index → path name (full|a|b)
-_report_groups: list[dict] = []  # grouped Excel rows ready for run_jde_full()
+_report_groups: list[dict] = []  # per-column report groups ready for run_jde_full()
 _login_completed: bool = False
 
 
@@ -57,148 +54,198 @@ PATH_TO_JSON: dict[str, str] = {
     "b":    "tests/test_cases/jde_b_path.json",
 }
 
-# Excel column mapping — fixed business contract for this workflow
-#   A=user_story, B=app_report, C=current_version, D=new_version,
-#   E=current_version_title, F=new_version_title,
-#   G=left_operand (for path detection),
-#   H=data_new, I=tab (for path detection),
-#   J=option_number, K=processing_new
-EXCEL_COLUMN_MAPPINGS: list[dict] = [
-    {"column": "A", "variable_name": "user_story",           "data_type": "string", "required": False},
-    {"column": "B", "variable_name": "app_report",           "data_type": "string", "required": True},
-    {"column": "C", "variable_name": "current_version",      "data_type": "string", "required": True},
-    {"column": "D", "variable_name": "new_version",          "data_type": "string", "required": True},
-    {"column": "E", "variable_name": "current_version_title","data_type": "string", "required": False},
-    {"column": "F", "variable_name": "new_version_title",    "data_type": "string", "required": True},
-    {"column": "G", "variable_name": "left_operand",         "data_type": "string", "required": False},
-    {"column": "H", "variable_name": "data_new",             "data_type": "string", "required": False},
-    {"column": "I", "variable_name": "tab",                  "data_type": "string", "required": False},
-    {"column": "J", "variable_name": "option_number",        "data_type": "string", "required": False},
-    {"column": "K", "variable_name": "processing_new",       "data_type": "string", "required": False},
-]
+# Excel layout — new format exported directly from JDE.
+#
+#   Row 1:   (blank or free-form header)
+#   Row 2:   Object Name (A/B) + New Version Title per report column
+#   Row 3:   "Copy from" label (A) + Current Version per report column
+#   Row 4:   "DS Field" (A), "DATA SELECTION" (B) + New Version per report column
+#   Row 5+:  Left Operand (A), Comparison (B) + New DS value per report column
+#
+# Each column from C onward is one report iteration. Data Selections are
+# rows 5..N in that column; row A tells us the field, B tells us the
+# comparison operator (used when we add a brand-new DS row in JDE).
+JDE_META_ROW_TITLE = 2
+JDE_META_ROW_CURRENT = 3
+JDE_META_ROW_NEW = 4
+JDE_DATA_START_ROW = 5
+JDE_FIRST_REPORT_COL = 3  # column C
 
 
-def _build_data_source_config(sheet_name: str) -> DataSourceConfig:
-    """Build the Excel DataSourceConfig from the fixed dashboard contract."""
-    return DataSourceConfig(**{
-        "source_id": "jde_report_versions",
-        "source_type": "excel_local",
-        "excel": {
-            "sheets": [{
-                "sheet_name": sheet_name,
-                "header_row": 1,
-                "data_start_row": 2,
-                "column_mappings": EXCEL_COLUMN_MAPPINGS,
-            }]
-        },
-        "iteration": {
-            "mode": "all_rows",
-            "sheet_name": sheet_name,
-            "max_rows": 500,
-        },
-    })
+def _extract_object_name(cell_values: list) -> str:
+    """Pull the Object Name (App/Report) out of the first rows of the sheet.
 
-
-def _cell_has_value(val) -> bool:
-    """True if a cell actually contains data (not None, not empty, not literal 'None')."""
-    if val is None:
-        return False
-    s = str(val).strip()
-    return bool(s) and s.lower() != "none"
-
-
-def detect_path(row_values: dict) -> Optional[str]:
-    """Return 'full', 'a', 'b', or None based on G (left_operand) and I (tab) columns.
-
-    - Full path: G has data AND I has data
-    - A path:    G has data AND I is empty
-    - B path:    G is empty AND I has data
-    - None:      both empty (row will be skipped)
+    We accept any variation like:
+        "Object Name: R4210IC"
+        "Object Name : R4210IC"
+        "R4210IC"                     (fallback — bare token)
     """
-    g = _cell_has_value(row_values.get("left_operand"))
-    i = _cell_has_value(row_values.get("tab"))
-    if g and i:
-        return "full"
-    if g and not i:
-        return "a"
-    if not g and i:
-        return "b"
-    return None
+    for raw in cell_values:
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if not s:
+            continue
+        # Look for "Object Name: <TOKEN>"
+        m = re.search(
+            r"object\s*name\s*[:\-]?\s*([A-Za-z0-9_]+)",
+            s,
+            re.IGNORECASE,
+        )
+        if m:
+            token = m.group(1).strip()
+            if token and token.upper()[0] in ("R", "P"):
+                return token
+        # Otherwise: whole cell IS the token
+        if re.match(r"^[RP][A-Za-z0-9_]+$", s):
+            return s
+    return ""
 
 
-def group_excel_rows(rows: list) -> tuple[list[dict], list[dict]]:
-    """Group consecutive Excel rows into report groups.
+def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict], list[dict]]:
+    """Parse the JDE-exported Excel file into report groups.
 
-    A row whose column B (`app_report`) starts with R or P STARTS a new group
-    (the report row). Subsequent rows whose `app_report` is empty but have G/H
-    or I/J/K data are CONTINUATION rows that add more data selections /
-    processing options to the previous group.
-
-    Returns: (groups, skipped)
+    Returns (report_groups, skipped) where each report_group has the same
+    shape run_jde_full expects: {report, data_selections, processing_options}.
+    Processing Options are always empty in this format (feature on hold).
     """
-    groups: list[dict] = []
-    skipped: list[dict] = []
-    current: Optional[dict] = None
+    from openpyxl import load_workbook
 
-    def _has_ds(values: dict) -> bool:
-        return _cell_has_value(values.get("left_operand"))
+    wb = load_workbook(file_path, read_only=True, data_only=True)
+    try:
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(
+                f"Sheet '{sheet_name}' not found. Available sheets: {wb.sheetnames}"
+            )
+        ws = wb[sheet_name]
 
-    def _has_po(values: dict) -> bool:
-        return _cell_has_value(values.get("tab")) or _cell_has_value(values.get("processing_new"))
+        # Read the first 4 rows in full (for Object Name detection + metadata)
+        header_cells: list = []
+        rows_by_index: dict[int, list] = {}
+        for row_index, row in enumerate(
+            ws.iter_rows(min_row=1, max_row=JDE_META_ROW_NEW, values_only=True), start=1
+        ):
+            rows_by_index[row_index] = list(row)
+            for cell in row:
+                header_cells.append(cell)
 
-    for r in rows:
-        values = r.values
-        app_report = str(values.get("app_report", "") or "").strip().upper()
+        app_report = _extract_object_name(header_cells)
 
-        if app_report and (app_report.startswith("R") or app_report.startswith("P")):
-            # New report — finalize previous group, start a fresh one
-            current = {
-                "row_index": r.row_index,
-                "report": dict(values),
-                "data_selections": [],
-                "processing_options": [],
-            }
-            if _has_ds(values):
-                current["data_selections"].append({
-                    "left_operand": values.get("left_operand", ""),
-                    "data_new": values.get("data_new", ""),
-                })
-            if _has_po(values):
-                current["processing_options"].append({
-                    "tab": values.get("tab", ""),
-                    "option_number": values.get("option_number", ""),
-                    "processing_new": values.get("processing_new", ""),
-                })
-            groups.append(current)
-        elif app_report:
-            # Has app_report but doesn't start with R or P
-            skipped.append({
-                "row": r.row_index,
-                "app_report": app_report,
-                "reason": "Column B must start with 'R' or 'P'",
-            })
-        elif current is not None and (_has_ds(values) or _has_po(values)):
-            # Continuation row — append data selection / processing option to current group
-            if _has_ds(values):
-                current["data_selections"].append({
-                    "left_operand": values.get("left_operand", ""),
-                    "data_new": values.get("data_new", ""),
-                })
-            if _has_po(values):
-                current["processing_options"].append({
-                    "tab": values.get("tab", ""),
-                    "option_number": values.get("option_number", ""),
-                    "processing_new": values.get("processing_new", ""),
-                })
-        else:
-            # Empty row with no app_report and no DS/PO data
-            skipped.append({
-                "row": r.row_index,
-                "app_report": app_report,
-                "reason": "Empty row (no app_report, no data selection, no processing option)",
+        # Metadata rows
+        row_title = rows_by_index.get(JDE_META_ROW_TITLE, [])
+        row_current = rows_by_index.get(JDE_META_ROW_CURRENT, [])
+        row_new = rows_by_index.get(JDE_META_ROW_NEW, [])
+
+        # Data-selection rows: read as many as we can, keep only those with
+        # a non-empty Left Operand in column A.
+        ds_rows: list[dict] = []
+        for row_index, row in enumerate(
+            ws.iter_rows(min_row=JDE_DATA_START_ROW, values_only=True),
+            start=JDE_DATA_START_ROW,
+        ):
+            row = list(row)
+            left = row[0] if len(row) > 0 else None
+            if left is None or not str(left).strip():
+                continue
+            ds_rows.append({
+                "row_index": row_index,
+                "row": row,
+                "left_operand": str(left).strip(),
+                "comparison": str(row[1]).strip() if len(row) > 1 and row[1] is not None else "",
             })
 
-    return groups, skipped
+        # Determine how many report columns we have (columns C..N).
+        # A column is considered "present" if any of Row 2/3/4 has data.
+        # Grow the search up to the widest row.
+        max_len = max(
+            len(row_title), len(row_current), len(row_new),
+            *[len(r["row"]) for r in ds_rows], JDE_FIRST_REPORT_COL,
+        )
+        report_groups: list[dict] = []
+        skipped: list[dict] = []
+
+        # Excel columns are 1-indexed; column C = index 2 in a zero-based list
+        for col_idx0 in range(JDE_FIRST_REPORT_COL - 1, max_len):
+            col_letter = _col_letter(col_idx0 + 1)
+            title = _cell(row_title, col_idx0)
+            current = _cell(row_current, col_idx0)
+            new_ver = _cell(row_new, col_idx0)
+
+            # Skip completely empty columns
+            if not any([title, current, new_ver]):
+                # Also check if this column has ANY DS values — if it does,
+                # something is off. Otherwise just skip.
+                if not any(_cell(r["row"], col_idx0) for r in ds_rows):
+                    continue
+
+            if not new_ver or not current:
+                skipped.append({
+                    "row": col_letter,
+                    "app_report": app_report,
+                    "reason": (
+                        f"Column {col_letter} missing "
+                        f"{'current version' if not current else 'new version'}"
+                    ),
+                })
+                continue
+
+            if app_report and not app_report.upper().startswith(("R", "P")):
+                skipped.append({
+                    "row": col_letter,
+                    "app_report": app_report,
+                    "reason": "App/Report must start with 'R' or 'P'",
+                })
+                continue
+
+            # Collect data selections for this report column
+            data_selections: list[dict] = []
+            for r in ds_rows:
+                val = _cell(r["row"], col_idx0)
+                if val is None or not str(val).strip():
+                    continue
+                data_selections.append({
+                    "left_operand": r["left_operand"],
+                    "comparison": r["comparison"],
+                    "data_new": str(val).strip(),
+                    "_source_row": r["row_index"],
+                })
+
+            report_groups.append({
+                "row_index": col_letter,  # keep letter for the UI preview
+                "report": {
+                    "app_report": app_report,
+                    "current_version": str(current).strip(),
+                    "new_version": str(new_ver).strip(),
+                    "new_version_title": str(title).strip() if title else "",
+                },
+                "data_selections": data_selections,
+                "processing_options": [],  # deprecated / on hold
+            })
+
+        return report_groups, skipped
+    finally:
+        wb.close()
+
+
+def _cell(row: list, idx0: int):
+    """Safely read row[idx0], return None if out of range or empty-ish."""
+    if idx0 >= len(row):
+        return None
+    v = row[idx0]
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+
+def _col_letter(col_num: int) -> str:
+    """1 → 'A', 27 → 'AA', ..."""
+    letters = ""
+    while col_num > 0:
+        col_num, rem = divmod(col_num - 1, 26)
+        letters = chr(ord("A") + rem) + letters
+    return letters
+
 
 
 def create_dashboard_app() -> FastAPI:
@@ -307,13 +354,11 @@ def create_dashboard_app() -> FastAPI:
     @app.post("/api/session/stop")
     async def stop_browser():
         """Close the browser and reset all dashboard state."""
-        global _suite_request, _data_context, _data_source_config
+        global _suite_request
         global _execution_results, _row_paths, _report_groups, _login_completed
         result = await _session.stop()
         # Wipe server-side state so the dashboard is ready for a fresh run
         _suite_request = None
-        _data_context = None
-        _data_source_config = None
         _execution_results = []
         _row_paths = {}
         _report_groups = []
@@ -327,8 +372,8 @@ def create_dashboard_app() -> FastAPI:
             "browser_active": _session.is_active,
             "logged_in": _session.is_logged_in,
             "suite_loaded": _suite_request is not None,
-            "data_loaded": _data_context is not None,
-            "data_rows": _data_context.total_rows if _data_context else 0,
+            "data_loaded": bool(_report_groups),
+            "data_rows": len(_report_groups),
             "executions_completed": len(_execution_results),
         }
 
@@ -371,8 +416,6 @@ def create_dashboard_app() -> FastAPI:
         sheet_name: str = Form("Sheet1"),
     ):
         """Upload an xlsx file, save to temp, and parse it."""
-        global _data_context, _data_source_config
-
         if not file.filename.lower().endswith(".xlsx"):
             raise HTTPException(status_code=400, detail="Only .xlsx files accepted")
 
@@ -398,11 +441,12 @@ def create_dashboard_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Failed to save upload: {exc}")
 
-        # Parse and filter using the dashboard's fixed column mapping
+        # Parse the JDE-exported workbook using the format-specific parser
+        # (columns C..N are one report iteration each; metadata is in rows 2-4).
         try:
-            _data_source_config = _build_data_source_config(sheet_name.strip() or "Sheet1")
-            parser = ExcelParser(str(saved_path), _data_source_config)
-            _data_context = parser.parse()
+            groups, skipped_rows = parse_jde_excel_export(
+                str(saved_path), sheet_name.strip() or "Sheet1"
+            )
         except Exception as exc:
             import traceback
             err = f"{type(exc).__name__}: {exc}"
@@ -416,29 +460,20 @@ def create_dashboard_app() -> FastAPI:
                 pass
 
         global _report_groups
-        _report_groups = []
-        skipped_rows: list[dict] = []
+        _report_groups = groups
 
-        # Log raw rows for debugging
-        for sheet_name, rows in _data_context.sheets.items():
-            for r in rows:
-                _session.logger.info(
-                    "Row %d: app_report=%r G(left_operand)=%r H(data_new)=%r I(tab)=%r J(option)=%r K(processing)=%r",
-                    r.row_index,
-                    r.values.get("app_report"),
-                    r.values.get("left_operand"),
-                    r.values.get("data_new"),
-                    r.values.get("tab"),
-                    r.values.get("option_number"),
-                    r.values.get("processing_new"),
-                )
+        # Log a per-column summary for debugging
+        for g in _report_groups:
+            _session.logger.info(
+                "Report col %s: app=%s current=%s new=%s DS=%d",
+                g["row_index"],
+                g["report"].get("app_report"),
+                g["report"].get("current_version"),
+                g["report"].get("new_version"),
+                len(g["data_selections"]),
+            )
 
-            # Group consecutive rows into report groups (continuation rows merge into previous)
-            sheet_groups, sheet_skipped = group_excel_rows(rows)
-            _report_groups.extend(sheet_groups)
-            skipped_rows.extend(sheet_skipped)
-
-        # Build a flat preview — one row per report group
+        # Build a flat preview — one row per report group (column)
         preview = []
         for group in _report_groups:
             report = group["report"]
@@ -447,8 +482,8 @@ def create_dashboard_app() -> FastAPI:
                 "app_report": report.get("app_report", ""),
                 "current_version": report.get("current_version", ""),
                 "new_version": report.get("new_version", ""),
+                "new_version_title": report.get("new_version_title", ""),
                 "data_selections_count": len(group["data_selections"]),
-                "processing_options_count": len(group["processing_options"]),
             })
 
         return {
@@ -463,9 +498,20 @@ def create_dashboard_app() -> FastAPI:
     @app.get("/api/data/preview")
     async def data_preview():
         """Get the loaded data preview."""
-        if not _data_context:
+        if not _report_groups:
             raise HTTPException(status_code=400, detail="No data loaded")
-        return {"rows": _data_context.total_rows, "preview": _format_preview(_data_context)}
+        preview = []
+        for g in _report_groups:
+            r = g["report"]
+            preview.append({
+                "_row": g["row_index"],
+                "app_report": r.get("app_report", ""),
+                "current_version": r.get("current_version", ""),
+                "new_version": r.get("new_version", ""),
+                "new_version_title": r.get("new_version_title", ""),
+                "data_selections_count": len(g["data_selections"]),
+            })
+        return {"rows": len(_report_groups), "preview": preview}
 
     # --- Execution endpoints ------------------------------------------------
 
@@ -551,7 +597,6 @@ def create_dashboard_app() -> FastAPI:
                 "tokens": total_tokens,
                 "screenshot": "",
                 "data_selections_count": len(group["data_selections"]),
-                "processing_options_count": len(group["processing_options"]),
                 "steps": steps_dicts,
             })
 
@@ -601,17 +646,6 @@ def create_dashboard_app() -> FastAPI:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _format_preview(ctx: DataContext) -> list[dict]:
-    """Format data rows for the frontend preview table."""
-    rows = []
-    for sheet_name, data_rows in ctx.sheets.items():
-        for dr in data_rows:
-            row = {"_row": dr.row_index, "_sheet": sheet_name}
-            row.update(dr.values)
-            rows.append(row)
-    return rows
-
 
 def _generate_execution_report() -> str:
     """Build a SuiteResult from execution results and generate HTML report."""

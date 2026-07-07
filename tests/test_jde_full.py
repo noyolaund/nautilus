@@ -37,6 +37,56 @@ USERNAME = os.getenv("JDE_USERNAME", "")
 PASSWORD = os.getenv("JDE_PASSWORD", "")
 IFRAME = "iframe#e1menuAppIframe"
 
+# Translate Excel comparison operators (Row 5+, Column B) into the visible
+# text used by JDE's Comparison dropdown ("is equal to", "is not equal to", ...).
+# Keys are lower-cased; unknown values fall through unchanged.
+COMPARISON_MAP: dict[str, str] = {
+    "equal": "is equal to",
+    "equals": "is equal to",
+    "=": "is equal to",
+    "==": "is equal to",
+    "is equal to": "is equal to",
+    "not equal": "is not equal to",
+    "is not equal": "is not equal to",
+    "is not equal to": "is not equal to",
+    "!=": "is not equal to",
+    "<>": "is not equal to",
+    "greater than": "is greater than",
+    ">": "is greater than",
+    "is greater than": "is greater than",
+    "greater than or equal": "is greater than or equal to",
+    "greater than or equal to": "is greater than or equal to",
+    ">=": "is greater than or equal to",
+    "is greater than or equal to": "is greater than or equal to",
+    "less than": "is less than",
+    "<": "is less than",
+    "is less than": "is less than",
+    "less than or equal": "is less than or equal to",
+    "less than or equal to": "is less than or equal to",
+    "<=": "is less than or equal to",
+    "is less than or equal to": "is less than or equal to",
+    "in list": "is in list",
+    "is in list": "is in list",
+    "not in list": "is not in list",
+    "is not in list": "is not in list",
+    "between": "is between",
+    "is between": "is between",
+    "not between": "is not between",
+    "is not between": "is not between",
+}
+
+
+def resolve_comparison(raw: str) -> str:
+    """Return the JDE dropdown text for a raw Excel comparison operator.
+
+    Falls back to the raw value (stripped) if no mapping matches — the
+    select step will report a clear failure listing the actual options.
+    """
+    if not raw:
+        return "is equal to"
+    key = str(raw).strip().lower()
+    return COMPARISON_MAP.get(key, str(raw).strip())
+
 
 # ---------------------------------------------------------------------------
 # Login flow (used when running standalone)
@@ -720,6 +770,103 @@ async def login(runner: StepRunner) -> None:
     await runner.screenshot()
 
 
+async def find_empty_left_operand_row(page: Page) -> Optional[str]:
+    """Return the row number of the last empty #LeftOperand{N} dropdown,
+    or None if every visible LeftOperand row already has a field selected.
+
+    JDE Data Selection always shows one blank template row at the bottom.
+    We pick the highest N whose selected option is empty (empty text/value),
+    so new selections are appended to the tail of the list.
+    """
+    js = """() => {
+        const selects = document.querySelectorAll("select[id^='LeftOperand']");
+        let winnerN = null;
+        for (const sel of selects) {
+            const m = sel.id.match(/(\\d+)$/);
+            if (!m) continue;
+            const n = parseInt(m[1], 10);
+            const opt = sel.options[sel.selectedIndex];
+            const text = ((opt ? opt.textContent : '') || '').trim();
+            const value = (sel.value || '').trim();
+            if (!text && !value) {
+                if (winnerN === null || n > winnerN) winnerN = n;
+            }
+        }
+        return winnerN;
+    }"""
+
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js)
+        except Exception:
+            continue
+        if result is not None:
+            return str(result)
+    return None
+
+
+async def add_data_selection_row(
+    page: Page,
+    runner: StepRunner,
+    left_operand_text: str,
+    comparison_text: str,
+    value: str,
+) -> None:
+    """Populate the last empty Data Selection row.
+
+    Sequence:
+      1. Pick the field name from the last empty #LeftOperand{N}
+      2. Pick the comparison operator from the matching #Comparison{N}
+         (translated via COMPARISON_MAP)
+      3. Change #RightOperand{N} to "Literal", type the value into #LITtf,
+         and click #hc_Select to commit
+    """
+    row_number = await find_empty_left_operand_row(page)
+    if not row_number:
+        raise StepError(
+            "Add data selection row",
+            "No empty LeftOperand dropdown found — cannot add a new row",
+            None,
+        )
+
+    print(
+        f"      ➕ Adding new DS row #{row_number}: "
+        f"{left_operand_text!r} {comparison_text!r} {value!r}"
+    )
+
+    await runner.select(
+        f"LeftOperand{row_number}",
+        value=left_operand_text,
+        selector=f"#LeftOperand{row_number}",
+        iframe=IFRAME,
+        selector_strategy="css",
+    )
+
+    resolved_comparison = resolve_comparison(comparison_text)
+    print(f"        Comparison: {comparison_text!r} → {resolved_comparison!r}")
+    await runner.select(
+        f"Comparison{row_number}",
+        value=resolved_comparison,
+        selector=f"#Comparison{row_number}",
+        iframe=IFRAME,
+        selector_strategy="css",
+    )
+
+    await runner.select(
+        f"RightOperand{row_number}",
+        value="Literal",
+        selector=f"#RightOperand{row_number}",
+        iframe=IFRAME,
+        selector_strategy="css",
+    )
+    await fill_jde_field(page, "#LITtf", str(value))
+    await runner.click(
+        "Select button",
+        selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+    )
+    await runner.screenshot()
+
+
 # ---------------------------------------------------------------------------
 # Main JDE Full Path flow — callable per Excel report group
 # ---------------------------------------------------------------------------
@@ -850,21 +997,37 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             for idx, sel in enumerate(data_selections, 1):
                 left_operand = sel.get("left_operand", "")
                 data_value = sel.get("data_new", "")
-                print(f"[{label}]   DS {idx}: {left_operand} = {data_value}")
+                comparison_value = sel.get("comparison", "")
+                print(
+                    f"[{label}]   DS {idx}: {left_operand} {comparison_value or '='} {data_value}"
+                )
+
+                # Skip blank Excel cells — they mean "no override for this
+                # Left Operand in this report column".
+                if not str(data_value).strip():
+                    print(f"[{label}]   ↳ empty value, skipping")
+                    continue
 
                 # Find the matching RightOperand row by scanning all
                 # LeftOperand dropdowns for one whose option text contains
-                # the user's left_operand value. Stops the iteration if
-                # nothing matches so the user can debug from the console output.
+                # the user's left_operand value. If nothing matches, add a
+                # brand-new row using the LeftOperand + Comparison from Excel.
                 try:
                     right_operand_sel = await find_right_operand_selector(page, left_operand)
                 except LookupError as exc:
-                    print(f"[{label}] ✖ {exc}")
-                    await page.screenshot(
-                        path=f"logs/jde_no_match_{report.get('app_report', 'unknown')}_{idx}.png",
-                        full_page=True,
-                    )
-                    return {"status": "fail", "error": str(exc), "report": report}
+                    print(f"[{label}]   ↳ {exc} — adding as a new row")
+                    try:
+                        await add_data_selection_row(
+                            page, runner, left_operand, comparison_value, data_value,
+                        )
+                    except Exception as add_exc:
+                        print(f"[{label}] ✖ Could not add new DS row: {add_exc}")
+                        await page.screenshot(
+                            path=f"logs/jde_add_row_fail_{report.get('app_report', 'unknown')}_{idx}.png",
+                            full_page=True,
+                        )
+                        return {"status": "fail", "error": str(add_exc), "report": report}
+                    continue
 
                 # Extract the row number from right_operand_sel ("#RightOperand4" → "4")
                 # — same number is used for #Select{N} when removing the row.
