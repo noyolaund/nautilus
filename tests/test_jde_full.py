@@ -770,6 +770,121 @@ async def login(runner: StepRunner) -> None:
     await runner.screenshot()
 
 
+# Left-operand names that use JDE's multi-value literal editor
+# (#litList + #LITtfList + #hc950 Add + #hc952 Delete) instead of a single #LITtf.
+MULTI_VALUE_LEFT_OPERANDS: set[str] = {
+    "order type",
+}
+
+
+def _split_multi_values(raw: str) -> list[str]:
+    """Split a semicolon-separated Excel value into a de-duplicated ordered list."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for chunk in str(raw or "").split(";"):
+        v = chunk.strip()
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out
+
+
+async def _read_lit_list_values(page: Page) -> list[str]:
+    """Return the visible text of every <option> currently in #litList."""
+    js = """() => {
+        const list = document.querySelector('#litList');
+        if (!list) return null;
+        return Array.from(list.options).map(o => (o.textContent || '').trim());
+    }"""
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js)
+        except Exception:
+            continue
+        if result is not None:
+            return [t for t in result if t]
+    return []
+
+
+async def _select_lit_list_option(page: Page, needle: str) -> bool:
+    """Select the <option> in #litList whose text matches *needle* (case-insensitive)
+    and fire a change event so JDE registers the selection. Returns True on success."""
+    js = """(target) => {
+        const list = document.querySelector('#litList');
+        if (!list) return false;
+        const norm = (s) => (s || '').trim().toLowerCase();
+        const want = norm(target);
+        for (const opt of list.options) {
+            if (norm(opt.textContent) === want) {
+                for (const o of list.options) o.selected = false;
+                opt.selected = true;
+                list.value = opt.value;
+                list.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            }
+        }
+        return false;
+    }"""
+    for frame in page.frames:
+        try:
+            if await frame.evaluate(js, needle):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def sync_literal_list_values(
+    page: Page, runner: StepRunner, desired_raw: str,
+) -> None:
+    """Reconcile JDE's multi-value literal list so #litList ends up containing
+    exactly the semicolon-separated values from Excel.
+
+    Sequence, based on the diff between #litList and *desired_raw*:
+      • For each value in Excel but missing from #litList → fill #LITtfList,
+        click #hc950 (Add).
+      • For each value in #litList but not in Excel → select it in #litList,
+        click #hc952 (Delete).
+      • Finally click #hc_Select to commit the panel.
+    """
+    desired = _split_multi_values(desired_raw)
+    current = await _read_lit_list_values(page)
+    desired_norm = {v.lower() for v in desired}
+    current_norm = {c.lower() for c in current}
+
+    missing = [v for v in desired if v.lower() not in current_norm]
+    extras = [c for c in current if c.lower() not in desired_norm]
+
+    print(
+        f"      🔁 litList sync: desired={desired} current={current} "
+        f"missing={missing} extras={extras}"
+    )
+
+    # Delete extras first so any single-select interactions don't collide
+    # with subsequent Add operations.
+    for extra in extras:
+        if not await _select_lit_list_option(page, extra):
+            print(f"      ⚠ Could not select {extra!r} in #litList — skipping delete")
+            continue
+        await runner.click(
+            f"Delete literal {extra!r} (#hc952)",
+            selector="#hc952", iframe=IFRAME, selector_strategy="css",
+        )
+
+    for value in missing:
+        await fill_jde_field(page, "#LITtfList", value)
+        await runner.click(
+            f"Add literal {value!r} (#hc950)",
+            selector="#hc950", iframe=IFRAME, selector_strategy="css",
+        )
+
+    await runner.click(
+        "Select button (#hc_Select)",
+        selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+    )
+
+
 async def find_empty_left_operand_row(page: Page) -> Optional[str]:
     """Return the row number of the last empty #LeftOperand{N} dropdown,
     or None if every visible LeftOperand row already has a field selected.
@@ -859,11 +974,15 @@ async def add_data_selection_row(
         iframe=IFRAME,
         selector_strategy="css",
     )
-    await fill_jde_field(page, "#LITtf", str(value))
-    await runner.click(
-        "Select button",
-        selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
-    )
+    if left_operand_text.strip().lower() in MULTI_VALUE_LEFT_OPERANDS:
+        # Multi-value literal editor drives its own #hc_Select commit.
+        await sync_literal_list_values(page, runner, str(value))
+    else:
+        await fill_jde_field(page, "#LITtf", str(value))
+        await runner.click(
+            "Select button",
+            selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+        )
     await runner.screenshot()
 
 
@@ -1082,12 +1201,17 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     value="Literal",
                     selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
                 )
-                # Enter the literal value char-by-char with explicit Tab commit
-                # to avoid JDE's onkey handlers swallowing characters between
-                # iterations.
-                await fill_jde_field(page, "#LITtf", str(data_value))
-                # Apply
-                await runner.click("Select button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
+                if left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS:
+                    # Multi-value literal editor: reconcile #litList against the
+                    # semicolon-separated Excel value. This clicks #hc_Select
+                    # itself as the final commit.
+                    await sync_literal_list_values(page, runner, str(data_value))
+                else:
+                    # Single-value literal: type into #LITtf and Apply.
+                    # Char-by-char with explicit Tab commit avoids JDE's onkey
+                    # handlers swallowing characters between iterations.
+                    await fill_jde_field(page, "#LITtf", str(data_value))
+                    await runner.click("Select button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
                 await runner.screenshot()
 
                 # Restore the lock state — only for the edit branch.
