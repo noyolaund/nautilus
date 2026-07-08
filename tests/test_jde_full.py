@@ -835,6 +835,76 @@ async def _select_lit_list_option(page: Page, needle: str) -> bool:
     return False
 
 
+async def detect_active_literal_tab(page: Page) -> Optional[str]:
+    """Return the visible text of the currently active tab in JDE's Literal
+    editor: one of 'Single Value', 'Range of Values', 'List of Values'.
+
+    JDE marks the active tab with the ``ActiveTabLink`` class:
+        <a class="ActiveTabLink" href="javascript:ocLitPrompt(2)">List of Values</a>
+    """
+    js = """() => {
+        const active = document.querySelector('a.ActiveTabLink');
+        if (!active) return null;
+        return (active.textContent || '').trim();
+    }"""
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js)
+        except Exception:
+            continue
+        if result:
+            return result
+    return None
+
+
+async def write_literal_by_active_tab(
+    page: Page, runner: StepRunner, value: str,
+) -> None:
+    """Detect the currently active tab in the Literal editor and write
+    *value* using that tab's controls, then click ``#hc_Select`` to commit.
+
+    Tab mapping:
+        Single Value    → #LITtf
+        Range of Values → #LITtfFrom / #LITtfTo  (Excel value must be 'A-B')
+        List of Values  → #LITtfList + #hc950 (Add) / #litList + #hc952 (Del)
+                          — reconciled via sync_literal_list_values.
+    """
+    active = await detect_active_literal_tab(page)
+    tab = (active or "").strip().lower()
+    print(f"      🏷 Literal editor active tab: {active!r}")
+
+    if "range" in tab:
+        raw = str(value or "").strip()
+        parts = raw.split("-", 1)
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            raise StepError(
+                "Range of Values",
+                f"Excel value {raw!r} is not a 'A-B' range",
+                None,
+            )
+        lo, hi = parts[0].strip(), parts[1].strip()
+        await fill_jde_field(page, "#LITtfFrom", lo)
+        await fill_jde_field(page, "#LITtfTo", hi)
+        await runner.click(
+            "Select button", selector="#hc_Select",
+            iframe=IFRAME, selector_strategy="css",
+        )
+        return
+
+    if "list" in tab:
+        # sync_literal_list_values itself clicks #hc_Select as its final commit.
+        await sync_literal_list_values(page, runner, str(value))
+        return
+
+    # Default / Single Value (also the safe fallback when the active tab
+    # can't be detected — the classic single-literal flow).
+    await fill_jde_field(page, "#LITtf", str(value))
+    await runner.click(
+        "Select button", selector="#hc_Select",
+        iframe=IFRAME, selector_strategy="css",
+    )
+
+
 async def sync_literal_list_values(
     page: Page, runner: StepRunner, desired_raw: str,
 ) -> None:
@@ -883,6 +953,76 @@ async def sync_literal_list_values(
         "Select button (#hc_Select)",
         selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
     )
+
+
+# Option values that JDE uses for "not set to a real literal" — matching any
+# of these against a non-sentinel Excel value should NOT count as a match.
+_RIGHT_OPERAND_SENTINELS: set[str] = {"literal", "blank", "zero", "null"}
+
+
+async def read_right_operand_selected_text(
+    page: Page, row_number: str,
+) -> Optional[str]:
+    """Return the currently-selected option text of #RightOperand{N}.
+
+    For a Data Selection row that already has a value, JDE renders the raw
+    literal as the selected option (e.g. ``<option selected value="SA,SF"
+    >SA,SF</option>``). For an untouched row the selected option is one of
+    the sentinel values ("Literal", "Blank", "Zero", "Null").
+
+    Returns None if the select cannot be found in any frame.
+    """
+    js = """(n) => {
+        const sel = document.querySelector('#RightOperand' + n);
+        if (!sel) return null;
+        const opt = sel.options[sel.selectedIndex];
+        if (!opt) return null;
+        return {
+            text: (opt.textContent || '').trim(),
+            value: (opt.value || '').trim(),
+        };
+    }"""
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js, row_number)
+        except Exception:
+            continue
+        if result:
+            # Prefer the visible text; fall back to the option value.
+            return result.get("text") or result.get("value") or ""
+    return None
+
+
+def _tokenize_multi_value(raw: str) -> set[str]:
+    """Split a comma/semicolon list into a normalized set for order-insensitive
+    comparison (used for multi-value Left Operands like Order Type)."""
+    tokens: set[str] = set()
+    for chunk in str(raw or "").replace(";", ",").split(","):
+        v = chunk.strip().lower()
+        if v:
+            tokens.add(v)
+    return tokens
+
+
+def right_operand_matches_excel(
+    current: Optional[str], excel_value: str, is_multi_value: bool,
+) -> bool:
+    """True if the current JDE literal matches the Excel value.
+
+    Sentinel current options ("Literal", "Blank", "Zero", "Null") never match
+    a non-sentinel Excel value — they mean "no real literal is set yet".
+    """
+    if current is None:
+        return False
+    cur = current.strip()
+    exp = str(excel_value or "").strip()
+    if not cur or not exp:
+        return False
+    if cur.lower() in _RIGHT_OPERAND_SENTINELS and exp.lower() not in _RIGHT_OPERAND_SENTINELS:
+        return False
+    if is_multi_value:
+        return _tokenize_multi_value(cur) == _tokenize_multi_value(exp)
+    return cur.lower() == exp.lower()
 
 
 async def find_empty_left_operand_row(page: Page) -> Optional[str]:
@@ -974,15 +1114,7 @@ async def add_data_selection_row(
         iframe=IFRAME,
         selector_strategy="css",
     )
-    if left_operand_text.strip().lower() in MULTI_VALUE_LEFT_OPERANDS:
-        # Multi-value literal editor drives its own #hc_Select commit.
-        await sync_literal_list_values(page, runner, str(value))
-    else:
-        await fill_jde_field(page, "#LITtf", str(value))
-        await runner.click(
-            "Select button",
-            selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
-        )
+    await write_literal_by_active_tab(page, runner, str(value))
     await runner.screenshot()
 
 
@@ -1162,6 +1294,25 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 if row_number:
                     row_is_locked = await is_data_selection_row_locked(page, row_number)
 
+                # Pre-edit value check: read the currently-selected option of
+                # #RightOperand{N} and compare with the Excel value. If they
+                # already match, skip to the next data selection — no unlock
+                # / edit / re-lock churn needed. REMOVE always goes through.
+                is_remove = str(data_value).strip().upper() == "REMOVE"
+                if not is_remove and row_number:
+                    current_right = await read_right_operand_selected_text(page, row_number)
+                    is_multi = left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS
+                    if right_operand_matches_excel(current_right, data_value, is_multi):
+                        print(
+                            f"[{label}]   ↳ current value {current_right!r} already "
+                            f"matches Excel {data_value!r} — skipping"
+                        )
+                        continue
+                    print(
+                        f"[{label}]   ↳ current JDE value {current_right!r} differs "
+                        f"from Excel {data_value!r} — will edit"
+                    )
+
                 # Unlock if needed so the next steps can mutate the row.
                 if row_is_locked and row_number:
                     await unlock_data_selection_row(runner, row_number)
@@ -1195,23 +1346,17 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     continue
 
                 # ── Default branch — add/update a Literal condition ──────
-                # Pick "Literal" from the matching right operand dropdown
+                # Pick "Literal" from the matching right operand dropdown;
+                # the write dispatch below uses the active tab in the Literal
+                # editor to pick the right control(s): Single Value → #LITtf,
+                # Range of Values → #LITtfFrom/#LITtfTo, List of Values →
+                # #LITtfList (multi-value reconciliation).
                 await runner.select(
                     "Right Operand dropdown",
                     value="Literal",
                     selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
                 )
-                if left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS:
-                    # Multi-value literal editor: reconcile #litList against the
-                    # semicolon-separated Excel value. This clicks #hc_Select
-                    # itself as the final commit.
-                    await sync_literal_list_values(page, runner, str(data_value))
-                else:
-                    # Single-value literal: type into #LITtf and Apply.
-                    # Char-by-char with explicit Tab commit avoids JDE's onkey
-                    # handlers swallowing characters between iterations.
-                    await fill_jde_field(page, "#LITtf", str(data_value))
-                    await runner.click("Select button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
+                await write_literal_by_active_tab(page, runner, str(data_value))
                 await runner.screenshot()
 
                 # Restore the lock state — only for the edit branch.
