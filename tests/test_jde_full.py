@@ -761,6 +761,32 @@ async def login(runner: StepRunner) -> None:
     await runner.screenshot()
 
 
+async def close_open_jde_dialogs(page: Page, label: str = "") -> None:
+    """Best-effort cleanup after a Data Selection / Processing Options failure.
+
+    Repeatedly clicks #hc_Select to dismiss any open JDE dialog stack (Literal
+    editor → Data Selection → Processing Options) so the next iteration can
+    find the Fast Path / batch-version inputs again. All errors are swallowed
+    — this runs from an exception handler and must never itself raise.
+    """
+    tag = f"[{label}] " if label else ""
+    for attempt in range(1, 5):
+        try:
+            frame = page.frame_locator(IFRAME)
+            btn = frame.locator("#hc_Select")
+            count = await btn.count()
+            if count == 0:
+                if attempt == 1:
+                    print(f"{tag}emergency close: no #hc_Select present, nothing to dismiss")
+                return
+            print(f"{tag}emergency close attempt {attempt}: clicking #hc_Select")
+            await btn.first.click(timeout=3000)
+            await asyncio.sleep(1)
+        except Exception as exc:
+            print(f"{tag}emergency close attempt {attempt} failed: {type(exc).__name__}: {exc}")
+            return
+
+
 # ---------------------------------------------------------------------------
 # Main JDE Full Path flow — callable per Excel report group
 # ---------------------------------------------------------------------------
@@ -905,7 +931,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         path=f"logs/jde_no_match_{report.get('app_report', 'unknown')}_{idx}.png",
                         full_page=True,
                     )
-                    return {"status": "fail", "error": str(exc), "report": report}
+                    # Close any open dialogs so the next report can start clean.
+                    await close_open_jde_dialogs(page, label)
+                    return {
+                        "status": "fail", "error": str(exc), "report": report,
+                        "steps": list(runner.results),
+                    }
 
                 # Extract the row number from right_operand_sel ("#RightOperand4" → "4")
                 # — same number is used for #Select{N} when removing the row.
@@ -984,6 +1015,11 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             # Wait for the Processing Options dialog to fully render its tabs
             await asyncio.sleep(2)
 
+            # Track the currently active tab across the loop. Clicking the
+            # same tab twice re-renders it and JDE resets any values we've
+            # just typed, so we only click when the tab actually changes.
+            current_tab_norm: Optional[str] = None
+
             for idx, po in enumerate(processing_options, 1):
                 tab = po.get("tab", "")
                 option_number_raw = po.get("option_number", "")
@@ -997,22 +1033,29 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     print(f"      ✖ Invalid option_number: {option_number_raw!r}, skipping")
                     continue
 
-                # 1. Click the tab by name
+                # 1. Click the tab by name — but only when it's DIFFERENT from
+                # the tab we're already on. Re-clicking the current tab
+                # restores its prior values (undoing this loop's edits).
                 if tab:
-                    tab_selector = await find_processing_option_tab(page, tab)
-                    if not tab_selector:
-                        raise StepError(
-                            "Find Processing Options tab",
-                            f"Could not find tab named {tab!r}",
-                            None,
+                    tab_norm = " ".join(str(tab).split()).strip().lower()
+                    if tab_norm == current_tab_norm:
+                        print(f"      Tab {tab!r} already active — skipping re-click")
+                    else:
+                        tab_selector = await find_processing_option_tab(page, tab)
+                        if not tab_selector:
+                            raise StepError(
+                                "Find Processing Options tab",
+                                f"Could not find tab named {tab!r}",
+                                None,
+                            )
+                        print(f"      Tab matched: {tab_selector}")
+                        await runner.click(
+                            f"Tab {tab!r}",
+                            selector=tab_selector, iframe=IFRAME, selector_strategy="css",
                         )
-                    print(f"      Tab matched: {tab_selector}")
-                    await runner.click(
-                        f"Tab {tab!r}",
-                        selector=tab_selector, iframe=IFRAME, selector_strategy="css",
-                    )
-                    # Give the tab content time to render
-                    await asyncio.sleep(1)
+                        # Give the tab content time to render
+                        await asyncio.sleep(1)
+                        current_tab_norm = tab_norm
 
                 # 2. Find the Nth text input on this tab and fill it
                 if processing_value:
@@ -1039,6 +1082,10 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             await page.screenshot(path=f"logs/jde_full_error_{report.get('app_report', 'unknown')}.png", full_page=True)
         except Exception:
             pass
+        # Dismiss any open Data Selection / Processing Options dialogs so
+        # the next report iteration doesn't inherit a modal that blocks
+        # the Fast Path input.
+        await close_open_jde_dialogs(page, label)
         return {
             "status": "fail",
             "error": str(e),
@@ -1054,6 +1101,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             await page.screenshot(path=f"logs/jde_full_unexpected_{report.get('app_report', 'unknown')}.png", full_page=True)
         except Exception:
             pass
+        await close_open_jde_dialogs(page, label)
         return {
             "status": "fail",
             "error": f"{type(e).__name__}: {e}",
