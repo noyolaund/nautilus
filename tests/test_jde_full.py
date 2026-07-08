@@ -136,27 +136,44 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
         const target = norm(needle);
         const selects = document.querySelectorAll("select[id^='LeftOperand']");
         const tried = [];
+        const rowChecks = [];
 
-        // Strategy 1: exact substring on selected option
+        // ── Strategy 1: match the SELECTED option of a LeftOperand dropdown.
+        //   Two passes to avoid the "Business Unit" vs "Business Unit - Header"
+        //   ambiguity — a shorter needle must NOT hijack a longer row that
+        //   merely contains it as a prefix.
+        //     Pass A (exact):   text === target
+        //     Pass B (substring): text.includes(target), prefer the SHORTEST hit
+        const selectedTexts = [];
         for (const sel of selects) {
             const opt = sel.options[sel.selectedIndex];
             const text = norm(opt ? opt.textContent : '');
             const score = fuzzyScore(target, text);
             tried.push({ id: sel.id, normalized: text, includes: text.includes(target), score: score.toFixed(2) });
-            if (text && text.includes(target)) {
-                const m = sel.id.match(/(\\d+)$/);
-                return { id: sel.id, n: m ? m[1] : null, strategy: "selected", text: text, target: target, tried: tried };
+            if (text) selectedTexts.push({ sel: sel, text: text });
+        }
+        for (const c of selectedTexts) {
+            if (c.text === target) {
+                const m = c.sel.id.match(/(\\d+)$/);
+                return { id: c.sel.id, n: m ? m[1] : null, strategy: "selected-exact", text: c.text, target: target, tried: tried };
             }
         }
+        const selectedSubstr = selectedTexts
+            .filter(c => c.text.includes(target))
+            .sort((a, b) => a.text.length - b.text.length);
+        if (selectedSubstr.length > 0) {
+            const c = selectedSubstr[0];
+            const m = c.sel.id.match(/(\\d+)$/);
+            return { id: c.sel.id, n: m ? m[1] : null, strategy: "selected-substr", text: c.text, target: target, tried: tried };
+        }
 
-        // Strategy 2: row-cell text match (handles LOCKED rows where the
-        // field name is rendered as static <td> text and no LeftOperand{N}
-        // select exists). We walk every #Select{N} checkbox, look at its
-        // <tr>, and match the EFFECTIVE text of each <td>:
-        //   - <td> with a <select>: the selected option's text
-        //   - <td> with no <select>: its raw textContent
-        // This avoids matching the 54 unrelated options of LeftOperand
-        // dropdowns (every dropdown has every field name as an option).
+        // ── Strategy 2: row-cell text match (handles LOCKED rows where the
+        //   field name is rendered as static <td> text and no LeftOperand{N}
+        //   select exists). We walk every #Select{N} checkbox, look at its
+        //   <tr>, and match the EFFECTIVE text of each <td>:
+        //     - <td> with a <select>: the selected option's text
+        //     - <td> with no <select>: its raw textContent
+        //   Two passes as above: exact-equality first, then shortest-substring.
         const cellEffectiveText = (td) => {
             const sels = td.querySelectorAll('select');
             if (sels.length > 0) {
@@ -169,7 +186,6 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
             }
             return norm(td.textContent);
         };
-        const rowChecks = [];
         const rowCheckboxes = document.querySelectorAll(
             "input[type='checkbox'][id^='Select']"
         );
@@ -182,27 +198,50 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
             const tds = Array.from(row.querySelectorAll('td'));
             const cellTexts = tds.map(td => cellEffectiveText(td));
             rowChecks.push({ n: n, cellTexts: cellTexts });
-            const matchIdx = cellTexts.findIndex(t => t && t.includes(target));
+        }
+        const dumpRowChecks = () => rowChecks.map(r => ({
+            n: r.n,
+            cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60)),
+        }));
+        // Pass A: exact cell equality
+        for (const r of rowChecks) {
+            const matchIdx = r.cellTexts.findIndex(t => t && t === target);
             if (matchIdx !== -1) {
                 return {
-                    id: '#Select' + n,
-                    n: n,
-                    strategy: "row-cell(td[" + matchIdx + "])",
-                    text: cellTexts[matchIdx],
-                    target: target,
-                    tried: tried,
-                    rowChecks: rowChecks.map(r => ({
-                        n: r.n,
-                        cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60))
-                    })),
+                    id: '#Select' + r.n, n: r.n,
+                    strategy: "row-cell-exact(td[" + matchIdx + "])",
+                    text: r.cellTexts[matchIdx], target: target,
+                    tried: tried, rowChecks: dumpRowChecks(),
                 };
             }
+        }
+        // Pass B: substring cell match — prefer the shortest containing text
+        // so "Business Unit" doesn't swallow the "Business Unit - Header" row.
+        let bestSubstr = null;
+        for (const r of rowChecks) {
+            for (let i = 0; i < r.cellTexts.length; i++) {
+                const t = r.cellTexts[i];
+                if (t && t.includes(target)) {
+                    if (!bestSubstr || t.length < bestSubstr.text.length) {
+                        bestSubstr = { n: r.n, col: i, text: t };
+                    }
+                }
+            }
+        }
+        if (bestSubstr) {
+            return {
+                id: '#Select' + bestSubstr.n, n: bestSubstr.n,
+                strategy: "row-cell-substr(td[" + bestSubstr.col + "])",
+                text: bestSubstr.text, target: target,
+                tried: tried, rowChecks: dumpRowChecks(),
+            };
         }
 
         // Strategy 3: fuzzy match on row cells (handles typos in the Excel
         // value — e.g. "Bussines Unit" vs "Business Unit" — and works for
         // both locked and unlocked rows since we use the same cell-text
-        // extraction as Strategy 2).
+        // extraction as Strategy 2). On score ties, prefer the shortest cell
+        // text so "Business Unit" wins over "Business Unit - Header".
         let bestScore = 0;
         let bestRowN = null;
         let bestCol = null;
@@ -212,7 +251,9 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
                 const text = r.cellTexts[i];
                 if (!text) continue;
                 const score = fuzzyScore(target, text);
-                if (score > bestScore) {
+                const better = (score > bestScore) ||
+                    (score === bestScore && bestText != null && text.length < bestText.length);
+                if (better) {
                     bestScore = score;
                     bestRowN = r.n;
                     bestCol = i;
