@@ -102,6 +102,34 @@ def _extract_object_name(cell_values: list) -> str:
     return ""
 
 
+def _clean_left_operand(raw: str) -> str:
+    """Normalize a JDE data-selection field name into a plain option label.
+
+    The new Excel export names data selections like:
+
+        "And BC Line Type (F411)(LNTY)"  ->  "Line Type"
+        "BC Line Type (F411)(LNTY)"      ->  "Line Type"
+
+    We strip, in order:
+      - a leading boolean operator ("And"/"Or"), which is optional,
+      - the leading two-letter section code that follows it ("BC"),
+      - any parenthesized data-dictionary codes like "(F411)(LNTY)".
+
+    The cleaned label is what we use to look up a Left Operand option.
+    """
+    if not raw:
+        return ""
+    s = str(raw)
+    # Drop parenthesized codes anywhere, e.g. "(F411)(LNTY)"
+    s = re.sub(r"\([^)]*\)", " ", s)
+    # Drop a leading boolean operator ("And"/"Or"), if present
+    s = re.sub(r"^\s*(?:and|or)\b\s*", "", s, flags=re.IGNORECASE)
+    # Drop the leading two-letter section code (e.g. "BC")
+    s = re.sub(r"^\s*[A-Za-z]{2}\b\s*", "", s)
+    # Collapse leftover whitespace
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict], list[dict]]:
     """Parse the JDE-exported Excel file into report groups.
 
@@ -150,7 +178,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
             ds_rows.append({
                 "row_index": row_index,
                 "row": row,
-                "left_operand": str(left).strip(),
+                "left_operand": _clean_left_operand(str(left)),
                 "comparison": str(row[1]).strip() if len(row) > 1 and row[1] is not None else "",
             })
 
