@@ -722,6 +722,16 @@ async def fill_nth_processing_input(
     print(f"      Typed {value!r} into input #{n}")
 
 
+# Monotonic counter so each PO-by-label call gets a fresh DOM marker.
+_PO_LABEL_MARKER_COUNTER = 0
+
+
+def reset_processing_option_marker_counter() -> None:
+    """Reset the per-call marker counter — call at the start of a test run."""
+    global _PO_LABEL_MARKER_COUNTER
+    _PO_LABEL_MARKER_COUNTER = 0
+
+
 async def fill_processing_input_by_label(
     page: Page, label_text: str, value: str, iframe: str = IFRAME,
 ) -> None:
@@ -739,6 +749,10 @@ async def fill_processing_input_by_label(
       • the target with its leading numeric prefix (``1.2.``) stripped.
     Shortest matching text wins on ties.
     """
+    global _PO_LABEL_MARKER_COUNTER
+    _PO_LABEL_MARKER_COUNTER += 1
+    marker_value = f"po-input-{_PO_LABEL_MARKER_COUNTER}"
+
     value = (str(value) if value is not None else "").strip()
     if not value:
         return
@@ -746,9 +760,18 @@ async def fill_processing_input_by_label(
     if not label_text:
         raise RuntimeError("Empty PO label — cannot locate input")
 
+    print(
+        f"      [PO-label] call #{_PO_LABEL_MARKER_COUNTER}: "
+        f"marker={marker_value!r}, label={label_text!r}"
+    )
+
     # JS finds the label element, then the closest editable input via a
-    # short set of strategies (same-row, parent-walk, forward-DOM).
-    js = r"""(labelText) => {
+    # short set of strategies (same-row, parent-walk, forward-DOM). It
+    # ALSO clears every prior data-jde-po-marker in this document before
+    # tagging, so a stale marker from a previous call can't survive to
+    # confuse locator.first (this was the real bug — a fixed marker meant
+    # every PO landed in the first-ever tagged input).
+    js = r"""({ labelText, marker }) => {
         const norm = (s) => (s || '')
             .split(/[\s ]+/)
             .filter(Boolean)
@@ -760,6 +783,28 @@ async def fill_processing_input_by_label(
         const rawTarget = norm(labelText);
         const stripTarget = norm(stripPrefix(labelText));
         if (!rawTarget && !stripTarget) return { error: 'empty label' };
+
+        // Wipe every prior data-jde-po-marker in the document so a stale
+        // marker from a previous PO call can't win locator.first this call.
+        const priorMarked = document.querySelectorAll('[data-jde-po-marker]');
+        const priorMarkerValues = [];
+        for (const el of priorMarked) {
+            priorMarkerValues.push(el.getAttribute('data-jde-po-marker'));
+            el.removeAttribute('data-jde-po-marker');
+        }
+
+        const describeInput = (el) => {
+            const r = el.getBoundingClientRect();
+            return {
+                tag: el.tagName,
+                id: el.id || null,
+                name: el.getAttribute('name') || null,
+                type: el.getAttribute('type') || null,
+                value: (el.value || '').slice(0, 40),
+                x: Math.round(r.left), y: Math.round(r.top),
+                w: Math.round(r.width), h: Math.round(r.height),
+            };
+        };
 
         const isEditable = (el) => {
             if (!el || el.tagName !== 'INPUT') return false;
@@ -818,10 +863,20 @@ async def fill_processing_input_by_label(
             if (row) {
                 const hit = findInSubtree(row);
                 if (hit) {
-                    hit.setAttribute('data-jde-po-marker', 'po-input-label');
-                    return { selector: "[data-jde-po-marker='po-input-label']",
-                             strategy: 'row', matchedText: c.text,
-                             matchedRank: c.rank };
+                    hit.setAttribute('data-jde-po-marker', marker);
+                    return {
+                        selector: "[data-jde-po-marker='" + marker + "']",
+                        marker: marker, strategy: 'row',
+                        matchedText: c.text, matchedRank: c.rank,
+                        candidateCount: candidates.length,
+                        priorMarkerCount: priorMarked.length,
+                        priorMarkerValues: priorMarkerValues,
+                        markerCountAfter: document.querySelectorAll(
+                            "[data-jde-po-marker='" + marker + "']").length,
+                        target: describeInput(hit),
+                        labelTag: winner.tagName,
+                        labelId: winner.id || null,
+                    };
                 }
                 strategies.push('row-empty');
             }
@@ -829,27 +884,50 @@ async def fill_processing_input_by_label(
             for (let depth = 0; depth < 4 && p; depth++, p = p.parentElement) {
                 const hit = findInSubtree(p);
                 if (hit) {
-                    hit.setAttribute('data-jde-po-marker', 'po-input-label');
-                    return { selector: "[data-jde-po-marker='po-input-label']",
-                             strategy: 'parent-' + depth, matchedText: c.text,
-                             matchedRank: c.rank };
+                    hit.setAttribute('data-jde-po-marker', marker);
+                    return {
+                        selector: "[data-jde-po-marker='" + marker + "']",
+                        marker: marker, strategy: 'parent-' + depth,
+                        matchedText: c.text, matchedRank: c.rank,
+                        candidateCount: candidates.length,
+                        priorMarkerCount: priorMarked.length,
+                        priorMarkerValues: priorMarkerValues,
+                        markerCountAfter: document.querySelectorAll(
+                            "[data-jde-po-marker='" + marker + "']").length,
+                        target: describeInput(hit),
+                        labelTag: winner.tagName,
+                        labelId: winner.id || null,
+                    };
                 }
             }
             let n = winner.nextElementSibling;
             while (n) {
                 const hit = findInSubtree(n) || (isEditable(n) ? n : null);
                 if (hit) {
-                    hit.setAttribute('data-jde-po-marker', 'po-input-label');
-                    return { selector: "[data-jde-po-marker='po-input-label']",
-                             strategy: 'sibling', matchedText: c.text,
-                             matchedRank: c.rank };
+                    hit.setAttribute('data-jde-po-marker', marker);
+                    return {
+                        selector: "[data-jde-po-marker='" + marker + "']",
+                        marker: marker, strategy: 'sibling',
+                        matchedText: c.text, matchedRank: c.rank,
+                        candidateCount: candidates.length,
+                        priorMarkerCount: priorMarked.length,
+                        priorMarkerValues: priorMarkerValues,
+                        markerCountAfter: document.querySelectorAll(
+                            "[data-jde-po-marker='" + marker + "']").length,
+                        target: describeInput(hit),
+                        labelTag: winner.tagName,
+                        labelId: winner.id || null,
+                    };
                 }
                 n = n.nextElementSibling;
             }
         }
         return { error: 'label found but no editable input near it',
                  target: rawTarget,
-                 tried: candidates.slice(0, 5).map(c => ({ text: c.text, rank: c.rank })) };
+                 candidateCount: candidates.length,
+                 tried: candidates.slice(0, 5).map(c => ({ text: c.text, rank: c.rank })),
+                 priorMarkerCount: priorMarked.length,
+                 priorMarkerValues: priorMarkerValues };
     }"""
 
     def _frame_priority(f):
@@ -863,29 +941,48 @@ async def fill_processing_input_by_label(
 
     selected_frame = None
     marker_selector: Optional[str] = None
-    strategy_used: Optional[str] = None
-    matched_text: Optional[str] = None
     last_error: Optional[str] = None
     for frame in sorted(page.frames, key=_frame_priority):
         try:
-            result = await frame.evaluate(js, label_text)
-        except Exception:
+            result = await frame.evaluate(
+                js, {"labelText": label_text, "marker": marker_value},
+            )
+        except Exception as exc:
+            print(f"      [PO-label] frame [{frame.name!r}] evaluate error: {exc}")
             continue
         if not result:
             continue
         frame_label = frame.name or (frame.url[:40] if frame.url else "main")
         if result.get("error"):
             last_error = result["error"]
-            print(f"      Frame [{frame_label}] label lookup: {result['error']}")
+            print(
+                f"      [PO-label] frame [{frame_label}]: {result['error']} "
+                f"(candidates={result.get('candidateCount')}, "
+                f"priorMarkers={result.get('priorMarkerCount')}={result.get('priorMarkerValues')!r})"
+            )
+            for t in (result.get("tried") or []):
+                print(f"        tried: {t}")
             continue
         marker_selector = result["selector"]
         selected_frame = frame
-        strategy_used = result.get("strategy")
-        matched_text = result.get("matchedText")
+        target_info = result.get("target") or {}
         print(
-            f"      Frame [{frame_label}] label {label_text!r} → matched "
-            f"{matched_text!r} (rank={result.get('matchedRank')}, "
-            f"strategy={strategy_used})"
+            f"      [PO-label] frame [{frame_label}] MATCH: "
+            f"rank={result.get('matchedRank')} strategy={result.get('strategy')!r} "
+            f"candidates={result.get('candidateCount')} "
+            f"priorMarkersCleared={result.get('priorMarkerCount')}={result.get('priorMarkerValues')!r} "
+            f"markerCountAfter={result.get('markerCountAfter')}"
+        )
+        print(
+            f"        label: <{result.get('labelTag')}> id={result.get('labelId')!r} "
+            f"text={result.get('matchedText')!r}"
+        )
+        print(
+            f"        input: <{target_info.get('tag')}> id={target_info.get('id')!r} "
+            f"name={target_info.get('name')!r} type={target_info.get('type')!r} "
+            f"pos=({target_info.get('x')},{target_info.get('y')}) "
+            f"size={target_info.get('w')}x{target_info.get('h')} "
+            f"currentValue={target_info.get('value')!r}"
         )
         break
 
@@ -897,11 +994,37 @@ async def fill_processing_input_by_label(
 
     frame_locator = page.frame_locator(iframe)
     locator = frame_locator.locator(marker_selector)
+    resolve_source = "frame_locator"
     try:
         await locator.first.wait_for(state="visible", timeout=5000)
     except Exception:
         locator = selected_frame.locator(marker_selector)
+        resolve_source = "selected_frame"
         await locator.first.wait_for(state="visible", timeout=5000)
+
+    # Post-resolve sanity check: how many DOM nodes match the marker in the
+    # frame we're about to click, and where does the resolved one live?
+    try:
+        resolved_count = await selected_frame.evaluate(
+            "(sel) => document.querySelectorAll(sel).length", marker_selector,
+        )
+        resolved_info = await selected_frame.evaluate(
+            """(sel) => {
+                const el = document.querySelector(sel);
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                return { id: el.id || null, name: el.getAttribute('name') || null,
+                         x: Math.round(r.left), y: Math.round(r.top),
+                         value: (el.value || '').slice(0, 40) };
+            }""",
+            marker_selector,
+        )
+        print(
+            f"      [PO-label] resolved via {resolve_source}: marker={marker_value!r} "
+            f"matches={resolved_count} → {resolved_info}"
+        )
+    except Exception as exc:
+        print(f"      [PO-label] sanity-check evaluate error: {exc}")
 
     await locator.first.click()
     await page.keyboard.press("Control+a")
@@ -909,7 +1032,7 @@ async def fill_processing_input_by_label(
     await locator.first.press_sequentially(value, delay=20)
     await asyncio.sleep(0.2)
     await page.keyboard.press("Tab")
-    print(f"      Typed {value!r} via label {label_text!r}")
+    print(f"      [PO-label] typed {value!r} via label {label_text!r} (marker={marker_value!r})")
 
 
 async def fill_jde_field(page: Page, selector: str, value: str, iframe: str = IFRAME) -> None:
@@ -1204,6 +1327,10 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             await runner.click("Processing Options", selector=processing_options_selector, iframe=IFRAME, selector_strategy="css")
             # Wait for the Processing Options dialog to fully render its tabs
             await asyncio.sleep(2)
+
+            # Fresh PO block → fresh marker sequence so log-side markers
+            # count 1, 2, 3, ... within this iteration.
+            reset_processing_option_marker_counter()
 
             # Track the currently active tab across the loop. Clicking the
             # same tab twice re-renders it and JDE resets any values we've
