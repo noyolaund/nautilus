@@ -722,6 +722,196 @@ async def fill_nth_processing_input(
     print(f"      Typed {value!r} into input #{n}")
 
 
+async def fill_processing_input_by_label(
+    page: Page, label_text: str, value: str, iframe: str = IFRAME,
+) -> None:
+    """Fill the text input adjacent to a Processing Options label.
+
+    Instead of counting inputs (fragile when a tab has sub-options like
+    1.1 / 1.2 that reorder the visible-input index), we locate the DOM
+    element whose own text matches *label_text* — the full string from
+    the Excel "Option Number" column, e.g. ``1.2. Enter User defined code``
+    — and target the nearest editable text input inside its row / parent.
+
+    Matching is whitespace-normalized, case-insensitive, and tolerates:
+      • exact equality,
+      • the target being a substring of the label's rendered text,
+      • the target with its leading numeric prefix (``1.2.``) stripped.
+    Shortest matching text wins on ties.
+    """
+    value = (str(value) if value is not None else "").strip()
+    if not value:
+        return
+    label_text = (str(label_text) if label_text is not None else "").strip()
+    if not label_text:
+        raise RuntimeError("Empty PO label — cannot locate input")
+
+    # JS finds the label element, then the closest editable input via a
+    # short set of strategies (same-row, parent-walk, forward-DOM).
+    js = r"""(labelText) => {
+        const norm = (s) => (s || '')
+            .split(/[\s ]+/)
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+        // Strip leading "1.", "1.2.", "12.3.4." etc. — same on both sides
+        // so the caller can supply either "1.2. Enter …" or "Enter …".
+        const stripPrefix = (s) => s.replace(/^(\d+\.)+\s*/, '').trim();
+        const rawTarget = norm(labelText);
+        const stripTarget = norm(stripPrefix(labelText));
+        if (!rawTarget && !stripTarget) return { error: 'empty label' };
+
+        const isEditable = (el) => {
+            if (!el || el.tagName !== 'INPUT') return false;
+            const type = (el.getAttribute('type') || 'text').toLowerCase();
+            if (!['text', 'number', 'tel', ''].includes(type)) return false;
+            if (el.disabled || el.readOnly) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+        const findInSubtree = (root) => {
+            if (!root) return null;
+            const ins = root.querySelectorAll(
+                "input[type='text'], input:not([type]), input[type='number']"
+            );
+            for (const i of ins) if (isEditable(i)) return i;
+            return null;
+        };
+
+        // Collect elements whose OWN text (not descendants') looks like the label.
+        const candidates = [];
+        const skipTags = new Set(['INPUT','TEXTAREA','SELECT','OPTION','SCRIPT','STYLE']);
+        for (const el of document.querySelectorAll('body *')) {
+            if (skipTags.has(el.tagName)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+
+            // Own text = direct child text nodes only
+            let own = '';
+            for (const node of el.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE) own += node.textContent + ' ';
+            }
+            const ownNorm = norm(own);
+            if (!ownNorm) continue;
+            const ownStripped = norm(stripPrefix(own));
+
+            let rank = -1;
+            if (ownNorm === rawTarget || ownStripped === stripTarget) rank = 0;      // exact
+            else if (rawTarget && ownNorm.includes(rawTarget)) rank = 1;             // raw substr
+            else if (stripTarget && ownStripped.includes(stripTarget)) rank = 2;     // stripped substr
+            if (rank === -1) continue;
+            candidates.push({ el, rank, len: ownNorm.length, text: ownNorm });
+        }
+        if (candidates.length === 0) {
+            return { error: 'no label matched', target: rawTarget, targetStripped: stripTarget };
+        }
+        // Best rank first, shortest text on ties.
+        candidates.sort((a, b) => a.rank - b.rank || a.len - b.len);
+
+        // For each candidate label, look for the nearest editable input:
+        //   row → parent-up-3 → following siblings → forward DOM.
+        for (const c of candidates) {
+            const winner = c.el;
+            const strategies = [];
+
+            const row = winner.closest('tr');
+            if (row) {
+                const hit = findInSubtree(row);
+                if (hit) {
+                    hit.setAttribute('data-jde-po-marker', 'po-input-label');
+                    return { selector: "[data-jde-po-marker='po-input-label']",
+                             strategy: 'row', matchedText: c.text,
+                             matchedRank: c.rank };
+                }
+                strategies.push('row-empty');
+            }
+            let p = winner.parentElement;
+            for (let depth = 0; depth < 4 && p; depth++, p = p.parentElement) {
+                const hit = findInSubtree(p);
+                if (hit) {
+                    hit.setAttribute('data-jde-po-marker', 'po-input-label');
+                    return { selector: "[data-jde-po-marker='po-input-label']",
+                             strategy: 'parent-' + depth, matchedText: c.text,
+                             matchedRank: c.rank };
+                }
+            }
+            let n = winner.nextElementSibling;
+            while (n) {
+                const hit = findInSubtree(n) || (isEditable(n) ? n : null);
+                if (hit) {
+                    hit.setAttribute('data-jde-po-marker', 'po-input-label');
+                    return { selector: "[data-jde-po-marker='po-input-label']",
+                             strategy: 'sibling', matchedText: c.text,
+                             matchedRank: c.rank };
+                }
+                n = n.nextElementSibling;
+            }
+        }
+        return { error: 'label found but no editable input near it',
+                 target: rawTarget,
+                 tried: candidates.slice(0, 5).map(c => ({ text: c.text, rank: c.rank })) };
+    }"""
+
+    def _frame_priority(f):
+        name = (f.name or "").lower()
+        url = (f.url or "").lower()
+        if "e1menuappiframe" in name or "e1menuappiframe" in url:
+            return 0
+        if "fastpath" in name or "fastpath" in url:
+            return 99
+        return 50
+
+    selected_frame = None
+    marker_selector: Optional[str] = None
+    strategy_used: Optional[str] = None
+    matched_text: Optional[str] = None
+    last_error: Optional[str] = None
+    for frame in sorted(page.frames, key=_frame_priority):
+        try:
+            result = await frame.evaluate(js, label_text)
+        except Exception:
+            continue
+        if not result:
+            continue
+        frame_label = frame.name or (frame.url[:40] if frame.url else "main")
+        if result.get("error"):
+            last_error = result["error"]
+            print(f"      Frame [{frame_label}] label lookup: {result['error']}")
+            continue
+        marker_selector = result["selector"]
+        selected_frame = frame
+        strategy_used = result.get("strategy")
+        matched_text = result.get("matchedText")
+        print(
+            f"      Frame [{frame_label}] label {label_text!r} → matched "
+            f"{matched_text!r} (rank={result.get('matchedRank')}, "
+            f"strategy={strategy_used})"
+        )
+        break
+
+    if not selected_frame or not marker_selector:
+        raise RuntimeError(
+            f"Could not find input for PO label {label_text!r} in any frame"
+            + (f" — last error: {last_error}" if last_error else "")
+        )
+
+    frame_locator = page.frame_locator(iframe)
+    locator = frame_locator.locator(marker_selector)
+    try:
+        await locator.first.wait_for(state="visible", timeout=5000)
+    except Exception:
+        locator = selected_frame.locator(marker_selector)
+        await locator.first.wait_for(state="visible", timeout=5000)
+
+    await locator.first.click()
+    await page.keyboard.press("Control+a")
+    await page.keyboard.press("Delete")
+    await locator.first.press_sequentially(value, delay=20)
+    await asyncio.sleep(0.2)
+    await page.keyboard.press("Tab")
+    print(f"      Typed {value!r} via label {label_text!r}")
+
+
 async def fill_jde_field(page: Page, selector: str, value: str, iframe: str = IFRAME) -> None:
     """Robustly fill a JDE input field.
 
@@ -1026,12 +1216,15 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 processing_value = po.get("processing_new", "")
                 print(f"[{label}]   PO {idx}: tab={tab!r}, opt={option_number_raw!r}, value={processing_value!r}")
 
-                # Parse option_number as int
-                try:
-                    option_number = int(str(option_number_raw).strip())
-                except (ValueError, TypeError):
-                    print(f"      ✖ Invalid option_number: {option_number_raw!r}, skipping")
+                # option_number may be either a plain integer (legacy "Nth
+                # visible input") or a full option label like
+                # "1.2. Enter User defined code" — dispatch is done at the
+                # fill step below.
+                option_ref = str(option_number_raw).strip()
+                if not option_ref:
+                    print(f"      ✖ Empty option_number, skipping")
                     continue
+                option_number = int(option_ref) if option_ref.isdigit() else None
 
                 # 1. Click the tab by name — but only when it's DIFFERENT from
                 # the tab we're already on. Re-clicking the current tab
@@ -1057,9 +1250,17 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         await asyncio.sleep(1)
                         current_tab_norm = tab_norm
 
-                # 2. Find the Nth text input on this tab and fill it
+                # 2. Fill the option:
+                #    - label-based lookup when option_number is a text label
+                #      (robust to sub-options like 1.1 / 1.2 shifting the
+                #      visible-input index)
+                #    - Nth-input lookup when option_number is a plain integer
+                #      (legacy sheets)
                 if processing_value:
-                    await fill_nth_processing_input(page, option_number, processing_value)
+                    if option_number is not None:
+                        await fill_nth_processing_input(page, option_number, processing_value)
+                    else:
+                        await fill_processing_input_by_label(page, option_ref, processing_value)
 
             # Apply (OK button closes the Processing Options dialog)
             await runner.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
