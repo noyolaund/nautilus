@@ -1004,12 +1004,17 @@ _RIGHT_OPERAND_SENTINELS: set[str] = {"literal", "blank", "zero", "null"}
 async def read_right_operand_selected_text(
     page: Page, row_number: str,
 ) -> Optional[str]:
-    """Return the currently-selected option text of #RightOperand{N}.
+    """Return the currently-selected value of #RightOperand{N}.
 
-    For a Data Selection row that already has a value, JDE renders the raw
-    literal as the selected option (e.g. ``<option selected value="SA,SF"
-    >SA,SF</option>``). For an untouched row the selected option is one of
-    the sentinel values ("Literal", "Blank", "Zero", "Null").
+    A Data Selection row that already has a literal keeps the real value in
+    the selected option's ``value`` attribute, and its visible text is empty:
+
+        <option selected value="SA,SF,SM,SO,SW,KK,RF"></option>
+
+    So we compare on the ``value`` attribute, not the (often empty) text.
+    For an untouched row the selected option is a sentinel ("Literal",
+    "Blank", "Zero", "Null"), whose data lives in the text — hence the text
+    fallback when ``value`` is empty.
 
     Returns None if the select cannot be found in any frame.
     """
@@ -1029,8 +1034,9 @@ async def read_right_operand_selected_text(
         except Exception:
             continue
         if result:
-            # Prefer the visible text; fall back to the option value.
-            return result.get("text") or result.get("value") or ""
+            # Authoritative on the option value; fall back to the visible
+            # text (sentinel rows carry their label there, not in value).
+            return result.get("value") or result.get("text") or ""
     return None
 
 
@@ -1298,6 +1304,25 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 # Left Operand in this report column".
                 if not str(data_value).strip():
                     print(f"[{label}]   ↳ empty value, skipping")
+                    continue
+
+                # On-hold values (Blank / Zero / Null) use a JDE flow that
+                # isn't defined yet — skip so they're never written as a
+                # literal. (behavior is attached at parse time.)
+                if sel.get("behavior") == "on_hold":
+                    print(
+                        f"[{label}]   ↳ on-hold value {data_value!r} "
+                        f"(behavior TBD) — skipping"
+                    )
+                    continue
+
+                # Values that failed their field's format rule are skipped so
+                # a malformed cell never gets edited into JDE.
+                if not sel.get("valid", True):
+                    print(
+                        f"[{label}]   ↳ {sel.get('validation_message') or 'invalid value'}"
+                        f" — skipping"
+                    )
                     continue
 
                 # Find the matching RightOperand row by scanning all
