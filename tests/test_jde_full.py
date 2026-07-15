@@ -1051,10 +1051,27 @@ def _tokenize_multi_value(raw: str) -> set[str]:
     return tokens
 
 
+def _looks_like_value_list(s: str) -> bool:
+    """True if the value is a separated list (JDE uses ',', Excel uses ';')."""
+    return "," in s or ";" in s
+
+
+def _collapse_ws(s: str) -> str:
+    """Remove all whitespace so spacing never affects a scalar/range compare
+    (e.g. '569  -  620' → '569-620')."""
+    return "".join(str(s or "").split())
+
+
 def right_operand_matches_excel(
     current: Optional[str], excel_value: str, is_multi_value: bool,
 ) -> bool:
     """True if the current JDE literal matches the Excel value.
+
+    Comparison ignores whitespace and list ordering so equivalent values
+    that only differ in spacing or separator style are treated as equal:
+
+        'PA,S,SO'    == 'PA; S; SO'     (list, order/separator-insensitive)
+        '569-620'    == '569  -  620'   (range, whitespace-insensitive)
 
     Sentinel current options ("Literal", "Blank", "Zero", "Null") never match
     a non-sentinel Excel value — they mean "no real literal is set yet".
@@ -1067,9 +1084,12 @@ def right_operand_matches_excel(
         return False
     if cur.lower() in _RIGHT_OPERAND_SENTINELS and exp.lower() not in _RIGHT_OPERAND_SENTINELS:
         return False
-    if is_multi_value:
+    # Treat as a value list when flagged (e.g. Order Type) or when either side
+    # is separated by ',' / ';' (e.g. Line Type) — compare as normalized sets.
+    if is_multi_value or _looks_like_value_list(cur) or _looks_like_value_list(exp):
         return _tokenize_multi_value(cur) == _tokenize_multi_value(exp)
-    return cur.lower() == exp.lower()
+    # Scalar / range: whitespace-insensitive, case-insensitive comparison.
+    return _collapse_ws(cur).lower() == _collapse_ws(exp).lower()
 
 
 async def find_empty_left_operand_row(page: Page) -> Optional[str]:
