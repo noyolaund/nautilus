@@ -61,15 +61,19 @@ PATH_TO_JSON: dict[str, str] = {
 #   Row 3:   "Copy from" label (A) + Current Version per report column
 #   Row 4:   "DS Field" (A), "DATA SELECTION" (B) + New Version per report column
 #   Row 5+:  Left Operand (A), Comparison (B) + New DS value per report column
+#            ... until a separator row whose column A == "PO Tab" ...
+#            then Processing Options: Tab (A), Option Number (B) + New value
+#            per report column.
 #
 # Each column from C onward is one report iteration. Data Selections are
-# rows 5..N in that column; row A tells us the field, B tells us the
-# comparison operator (used when we add a brand-new DS row in JDE).
+# the rows above the "PO Tab" separator; Processing Options are the rows
+# below it. Column A is the field/tab, B is the comparison/option number.
 JDE_META_ROW_TITLE = 2
 JDE_META_ROW_CURRENT = 3
 JDE_META_ROW_NEW = 4
 JDE_DATA_START_ROW = 5
 JDE_FIRST_REPORT_COL = 3  # column C
+JDE_PO_SEPARATOR = "po tab"  # column-A marker (compared lower-cased)
 
 
 def _extract_object_name(cell_values: list) -> str:
@@ -225,7 +229,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
 
     Returns (report_groups, skipped) where each report_group has the same
     shape run_jde_full expects: {report, data_selections, processing_options}.
-    Processing Options are always empty in this format (feature on hold).
+    Processing Options come from the rows below the "PO Tab" separator row.
     """
     from openpyxl import load_workbook
 
@@ -254,30 +258,58 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         row_current = rows_by_index.get(JDE_META_ROW_CURRENT, [])
         row_new = rows_by_index.get(JDE_META_ROW_NEW, [])
 
-        # Data-selection rows: read as many as we can, keep only those with
-        # a non-empty Left Operand in column A.
+        # Rows from row 5 down are split into two sections by a separator row
+        # whose column A holds the constant "PO Tab":
+        #
+        #   Data Selection rows (above the separator):
+        #     A = Left Operand, B = Comparison, C+ = New value per report
+        #   Processing Option rows (below the separator):
+        #     A = Tab, B = Option Number, C+ = New value per report
+        #
+        # (In the previous format Tab/Option Number/New Value came from
+        # columns I/J/K; they now live in A/B/C+ of the PO section.)
         ds_rows: list[dict] = []
+        po_rows: list[dict] = []
+        in_po_section = False
         for row_index, row in enumerate(
             ws.iter_rows(min_row=JDE_DATA_START_ROW, values_only=True),
             start=JDE_DATA_START_ROW,
         ):
             row = list(row)
-            left = row[0] if len(row) > 0 else None
-            if left is None or not str(left).strip():
+            col_a = row[0] if len(row) > 0 else None
+            a_str = str(col_a).strip() if col_a is not None else ""
+
+            # Separator row → everything below belongs to Processing Options.
+            if a_str.lower() == JDE_PO_SEPARATOR:
+                in_po_section = True
                 continue
-            ds_rows.append({
-                "row_index": row_index,
-                "row": row,
-                "left_operand": _clean_left_operand(str(left)),
-                "comparison": str(row[1]).strip() if len(row) > 1 and row[1] is not None else "",
-            })
+            if not a_str:
+                continue
+
+            col_b = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+            if in_po_section:
+                po_rows.append({
+                    "row_index": row_index,
+                    "row": row,
+                    "tab": a_str,
+                    "option_number": col_b,
+                })
+            else:
+                ds_rows.append({
+                    "row_index": row_index,
+                    "row": row,
+                    "left_operand": _clean_left_operand(a_str),
+                    "comparison": col_b,
+                })
 
         # Determine how many report columns we have (columns C..N).
         # A column is considered "present" if any of Row 2/3/4 has data.
         # Grow the search up to the widest row.
         max_len = max(
             len(row_title), len(row_current), len(row_new),
-            *[len(r["row"]) for r in ds_rows], JDE_FIRST_REPORT_COL,
+            *[len(r["row"]) for r in ds_rows],
+            *[len(r["row"]) for r in po_rows],
+            JDE_FIRST_REPORT_COL,
         )
         report_groups: list[dict] = []
         skipped: list[dict] = []
@@ -291,9 +323,11 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
 
             # Skip completely empty columns
             if not any([title, current, new_ver]):
-                # Also check if this column has ANY DS values — if it does,
-                # something is off. Otherwise just skip.
-                if not any(_cell(r["row"], col_idx0) for r in ds_rows):
+                # Also check if this column has ANY DS or PO values — if it
+                # does, something is off. Otherwise just skip.
+                has_values = any(_cell(r["row"], col_idx0) for r in ds_rows) or \
+                    any(_cell(r["row"], col_idx0) for r in po_rows)
+                if not has_values:
                     continue
 
             if not new_ver or not current:
@@ -344,6 +378,21 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "_source_row": r["row_index"],
                 })
 
+            # Collect processing options for this report column (rows below
+            # the "PO Tab" separator). Tab = col A, Option Number = col B,
+            # New Value = this report's column.
+            processing_options: list[dict] = []
+            for r in po_rows:
+                val = _cell(r["row"], col_idx0)
+                if val is None or not str(val).strip():
+                    continue
+                processing_options.append({
+                    "tab": r["tab"],
+                    "option_number": r["option_number"],
+                    "processing_new": str(val).strip(),
+                    "_source_row": r["row_index"],
+                })
+
             report_groups.append({
                 "row_index": col_letter,  # keep letter for the UI preview
                 "report": {
@@ -353,7 +402,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "new_version_title": str(title).strip() if title else "",
                 },
                 "data_selections": data_selections,
-                "processing_options": [],  # deprecated / on hold
+                "processing_options": processing_options,
             })
 
         return report_groups, skipped
