@@ -200,7 +200,10 @@ def _rule_string(value: str) -> bool:
 _FIELD_RULES: dict[str, tuple] = {
     "order type":           (_rule_code_list(2, 2), "one or more 2-character codes separated by ';' (e.g. 'SA; SF')"),
     "line type":            (_rule_code_list(1, 2), "one or more 1-2 character codes separated by ';' (e.g. 'S; W2')"),
-    "status code":          (_rule_int_range,       "an integer range 'N - M' (e.g. '520 - 600')"),
+    # JDE names this field "Status Code - Next" (NXTR); plain "Status Code"
+    # is kept so either spelling is validated.
+    "status code - next":   (_rule_int_range,       "an integer range 'N - M' (e.g. '569 - 620')"),
+    "status code":          (_rule_int_range,       "an integer range 'N - M' (e.g. '569 - 620')"),
     "inter branch sales":   (_rule_single_int,      "a single integer"),
     "order company":        (_rule_single_int,      "a single integer"),
     "original document no": (_rule_single_int,      "a single integer"),
@@ -264,10 +267,12 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         #   Data Selection rows (above the separator):
         #     A = Left Operand, B = Comparison, C+ = New value per report
         #   Processing Option rows (below the separator):
-        #     A = Tab, B = Option Number, C+ = New value per report
+        #     A = Tab, B = option label, C+ = New value per report
         #
-        # (In the previous format Tab/Option Number/New Value came from
-        # columns I/J/K; they now live in A/B/C+ of the PO section.)
+        # Column B is the option's full label text (e.g. "1. Sales Order
+        # Entry (P4210)") — the executor searches it in JDE to locate the
+        # text box to fill. (In the previous format Tab/Option Number/New
+        # Value came from columns I/J/K; they now live in A/B/C+.)
         ds_rows: list[dict] = []
         po_rows: list[dict] = []
         in_po_section = False
@@ -292,7 +297,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "row_index": row_index,
                     "row": row,
                     "tab": a_str,
-                    "option_number": col_b,
+                    "option_label": col_b,
                 })
             else:
                 ds_rows.append({
@@ -379,8 +384,9 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                 })
 
             # Collect processing options for this report column (rows below
-            # the "PO Tab" separator). Tab = col A, Option Number = col B,
-            # New Value = this report's column.
+            # the "PO Tab" separator). Tab = col A, option label = col B,
+            # New Value = this report's column. A blank cell means "do
+            # nothing for this option in this report".
             processing_options: list[dict] = []
             for r in po_rows:
                 val = _cell(r["row"], col_idx0)
@@ -388,7 +394,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     continue
                 processing_options.append({
                     "tab": r["tab"],
-                    "option_number": r["option_number"],
+                    "option_label": r["option_label"],
                     "processing_new": str(val).strip(),
                     "_source_row": r["row_index"],
                 })

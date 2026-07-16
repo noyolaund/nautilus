@@ -15,6 +15,7 @@ Or import and call programmatically (used by the dashboard):
 
 import asyncio
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -655,6 +656,183 @@ async def find_processing_option_tab(page: Page, tab_name: str) -> Optional[str]
     return None
 
 
+# Frames are searched JDE-app-first: the PO input we want (e.g. P01T0) lives
+# in e1menuAppIframe, while the left-panel fast-path field sits in its own
+# iframe and would otherwise shadow it.
+def _po_frame_priority(f) -> int:
+    name = (f.name or "").lower()
+    url = (f.url or "").lower()
+    if "e1menuappiframe" in name or "e1menuappiframe" in url:
+        return 0  # JDE app — search here first with NO skip
+    if "fastpath" in name or "fastpath" in url:
+        return 99  # left-panel — only useful as last resort
+    return 50
+
+
+async def _type_into_marked_input(
+    page: Page,
+    selected_frame,
+    marker_selector: str,
+    value: str,
+    iframe: str = IFRAME,
+    what: str = "",
+) -> None:
+    """Click, clear and type *value* into the element tagged with
+    *marker_selector*, then Tab to commit."""
+    locator = page.frame_locator(iframe).locator(marker_selector)
+    try:
+        await locator.first.wait_for(state="visible", timeout=5000)
+    except Exception:
+        # Fallback: locate directly on the matched frame
+        locator = selected_frame.locator(marker_selector)
+        await locator.first.wait_for(state="visible", timeout=5000)
+
+    await locator.first.click()
+    await page.keyboard.press("Control+a")
+    await page.keyboard.press("Delete")
+    await locator.first.press_sequentially(value, delay=20)
+    await asyncio.sleep(0.2)
+    await page.keyboard.press("Tab")
+    print(f"      Typed {value!r} into {what or marker_selector}")
+
+
+def _leading_option_number(label: str) -> Optional[int]:
+    """Extract a Processing Option's leading number from its label.
+
+    '1. Sales Order Entry (P4210)' → 1;  '5' → 5;  'Order Type' → None.
+    """
+    m = re.match(r"\s*(\d+)\s*[.)]?", str(label or ""))
+    return int(m.group(1)) if m else None
+
+
+async def find_processing_input_by_label(
+    page: Page, label_text: str,
+) -> tuple[Any, Optional[str]]:
+    """Tag the text box belonging to *label_text* on the active Processing
+    Options tab and return (frame, marker_selector), or (None, None).
+
+    JDE renders each option as its label followed by the input, e.g.
+        <td>1. Sales Order Entry (P4210)</td><td><input id="..."></td>
+    so we find the text node holding the label and take the first usable
+    input after it (next siblings, then the following cell(s) of the row).
+    The marker is unique per label so concurrent options can't collide.
+    """
+    label_text = str(label_text or "").strip()
+    if not label_text:
+        return None, None
+
+    js = """({ labelText, slug }) => {
+        const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        const want = norm(labelText);
+        if (!want) return null;
+        const SEL = "input[type='text'], input:not([type]), input[type='number'], textarea";
+        const usable = (el) => {
+            if (!el) return false;
+            if (el.disabled || el.readOnly) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+        const take = (el) => {
+            el.setAttribute('data-jde-po-label', slug);
+            return {
+                selector: "[data-jde-po-label='" + slug + "']",
+                targetId: el.id || el.name || '(unnamed)',
+            };
+        };
+        // First usable input at or after `start`, scanning next siblings.
+        const scan = (start) => {
+            let node = start;
+            while (node) {
+                const input = (node.matches && node.matches(SEL))
+                    ? node
+                    : (node.querySelector ? node.querySelector(SEL) : null);
+                if (usable(input)) return input;
+                node = node.nextElementSibling;
+            }
+            return null;
+        };
+        // The input belonging to a label element: first look after the label
+        // itself, then in the following cell(s) of its table row.
+        const inputFor = (parent) => {
+            let input = scan(parent.nextElementSibling);
+            if (input) return input;
+            const cell = parent.closest('td,th');
+            if (!cell) return null;
+            input = scan(cell.nextElementSibling);
+            if (input) return input;
+            const row = cell.closest('tr');
+            if (row) {
+                const rowInput = row.querySelector(SEL);
+                if (usable(rowInput)) return rowInput;
+            }
+            return null;
+        };
+        // Prefer an exact label match; only fall back to a containing match.
+        // ('1. Order Type' must not hijack '11. Order Type Override'.)
+        let partial = null;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+        while (walker.nextNode()) {
+            const node = walker.currentNode;
+            const text = norm(node.textContent);
+            if (!text) continue;
+            const isExact = text === want;
+            if (!isExact && !text.includes(want)) continue;
+            const parent = node.parentElement;
+            if (!parent) continue;
+            const input = inputFor(parent);
+            if (!input) continue;
+            if (isExact) return take(input);
+            if (!partial) partial = input;
+        }
+        return partial ? take(partial) : null;
+    }"""
+
+    slug = re.sub(r"[^a-z0-9]+", "-", label_text.lower()).strip("-")[:40] or "po"
+    for frame in sorted(page.frames, key=_po_frame_priority):
+        try:
+            result = await frame.evaluate(js, {"labelText": label_text, "slug": slug})
+        except Exception:
+            continue
+        if result and result.get("selector"):
+            frame_label = frame.name or frame.url[:40] or "main"
+            print(
+                f"      Frame [{frame_label}]: matched label {label_text!r} → "
+                f"input (id={result.get('targetId')!r})"
+            )
+            return frame, result["selector"]
+    return None, None
+
+
+async def fill_processing_option(
+    page: Page, option_label: str, value: str, iframe: str = IFRAME,
+) -> None:
+    """Fill the Processing Option identified by *option_label* (column B).
+
+    Locates the field by searching the label text in JDE and filling the
+    closest text box. Falls back to the label's leading option number
+    ('1. Sales Order Entry (P4210)' → input #1) when the text isn't found.
+    """
+    value = (str(value) if value is not None else "").strip()
+    if not value:
+        return
+
+    frame, marker = await find_processing_input_by_label(page, option_label)
+    if frame and marker:
+        await _type_into_marked_input(
+            page, frame, marker, value, iframe, what=f"option {option_label!r}",
+        )
+        return
+
+    n = _leading_option_number(option_label)
+    if n is None:
+        raise RuntimeError(
+            f"Could not locate Processing Option {option_label!r} by text, and "
+            f"it has no leading option number to fall back on"
+        )
+    print(f"      Label {option_label!r} not found — falling back to input #{n}")
+    await fill_nth_processing_input(page, n, value, iframe)
+
+
 async def fill_nth_processing_input(
     page: Page, n: int, value: str, iframe: str = IFRAME
 ) -> None:
@@ -704,28 +882,16 @@ async def fill_nth_processing_input(
         };
     }"""
 
-    frame_locator = page.frame_locator(iframe)
     selected_frame = None
     marker_selector = None
 
     # Re-order the frames so we try the JDE app iframe first (no skip),
-    # then fall back to other frames with skip-first behavior. The PO input
-    # we want lives in e1menuAppIframe; the fast-path field is in its own
-    # iframe (E1MFastpathHiddenIframe / SilentOCLIFrame / etc.).
-    def _frame_priority(f):
-        name = (f.name or "").lower()
-        url = (f.url or "").lower()
-        if "e1menuappiframe" in name or "e1menuappiframe" in url:
-            return 0  # JDE app — search here first with NO skip
-        if "fastpath" in name or "fastpath" in url:
-            return 99  # left-panel — only useful as last resort
-        return 50
-
-    ordered_frames = sorted(page.frames, key=_frame_priority)
+    # then fall back to other frames with skip-first behavior.
+    ordered_frames = sorted(page.frames, key=_po_frame_priority)
 
     for frame in ordered_frames:
         # No skip in the JDE app iframe; skip first elsewhere
-        skip_first = _frame_priority(frame) != 0
+        skip_first = _po_frame_priority(frame) != 0
         try:
             result = await frame.evaluate(js, {"n": n, "skipFirst": skip_first})
         except Exception:
@@ -754,22 +920,9 @@ async def fill_nth_processing_input(
     if not selected_frame or not marker_selector:
         raise RuntimeError(f"Could not find input #{n} in any frame")
 
-    # Use the marker selector from the iframe we tagged
-    locator = frame_locator.locator(marker_selector)
-    try:
-        await locator.first.wait_for(state="visible", timeout=5000)
-    except Exception:
-        # Fallback: locate directly on the matched frame
-        locator = selected_frame.locator(marker_selector)
-        await locator.first.wait_for(state="visible", timeout=5000)
-
-    await locator.first.click()
-    await page.keyboard.press("Control+a")
-    await page.keyboard.press("Delete")
-    await locator.first.press_sequentially(value, delay=20)
-    await asyncio.sleep(0.2)
-    await page.keyboard.press("Tab")
-    print(f"      Typed {value!r} into input #{n}")
+    await _type_into_marked_input(
+        page, selected_frame, marker_selector, value, iframe, what=f"input #{n}",
+    )
 
 
 async def fill_jde_field(page: Page, selector: str, value: str, iframe: str = IFRAME) -> None:
@@ -1207,7 +1360,8 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             ...   # multiple rows = multiple data selection entries
         ],
         "processing_options": [
-            {"tab": "10a", "option_number": "5", "processing_new": "INV"},
+            {"tab": "Versions", "option_label": "1. Sales Order Entry (P4210)",
+             "processing_new": "MOD101"},
             ...
         ]
     }
@@ -1463,15 +1617,22 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
 
             for idx, po in enumerate(processing_options, 1):
                 tab = po.get("tab", "")
-                option_number_raw = po.get("option_number", "")
+                # Column B — the option's label text, searched in JDE to find
+                # the text box. Legacy rows may carry a bare option number
+                # under "option_number" instead.
+                option_label = str(
+                    po.get("option_label") or po.get("option_number") or ""
+                ).strip()
                 processing_value = po.get("processing_new", "")
-                print(f"[{label}]   PO {idx}: tab={tab!r}, opt={option_number_raw!r}, value={processing_value!r}")
+                print(f"[{label}]   PO {idx}: tab={tab!r}, option={option_label!r}, value={processing_value!r}")
 
-                # Parse option_number as int
-                try:
-                    option_number = int(str(option_number_raw).strip())
-                except (ValueError, TypeError):
-                    print(f"      ✖ Invalid option_number: {option_number_raw!r}, skipping")
+                # A blank Excel cell means "do nothing for this option in
+                # this report column".
+                if not str(processing_value).strip():
+                    print(f"[{label}]   ↳ empty value, skipping")
+                    continue
+                if not option_label:
+                    print(f"[{label}]   ↳ no option label, skipping")
                     continue
 
                 # 1. Click the tab by name
@@ -1491,9 +1652,9 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     # Give the tab content time to render
                     await asyncio.sleep(1)
 
-                # 2. Find the Nth text input on this tab and fill it
-                if processing_value:
-                    await fill_nth_processing_input(page, option_number, processing_value)
+                # 2. Fill this option's text box — located by searching the
+                # label text, falling back to its leading option number.
+                await fill_processing_option(page, option_label, processing_value)
 
             # Apply (OK button closes the Processing Options dialog)
             await runner.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
@@ -1556,7 +1717,8 @@ SAMPLE_REPORT = {
         # Add more entries here to test the loop
     ],
     "processing_options": [
-        {"tab": "10a", "option_number": "5", "processing_new": "EDOBE017"},
+        {"tab": "Versions", "option_label": "1. Sales Order Entry (P4210)",
+         "processing_new": "MOD101"},
     ],
 }
 
