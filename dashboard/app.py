@@ -140,26 +140,26 @@ def _clean_left_operand(raw: str) -> str:
 #
 # Every extracted Data Selection value is classified into an edit *behavior*:
 #
-#   "remove"  → delete the matching row (handled by the REMOVE branch)
-#   "on_hold" → Blank / Zero / Null; a JDE flow that is defined later
+#   "remove"  → delete the matching row (REMOVE and "Blank" both map here)
+#   "zero"    → select the "Zero" option in the Right Operand combo box
+#   "null"    → select the "Null" option in the Right Operand combo box
 #   "literal" → a concrete value written via the Literal editor (default)
 #
 # Only "literal" values are format-checked against the field's rule below.
 # A malformed literal is flagged (valid=False) so the executor can skip that
 # single Data Selection instead of writing a bad value into JDE.
 
-# Excel values that map to the (still-to-be-defined) on-hold flow.
-# Compared case-insensitively.
-_ON_HOLD_VALUES: set[str] = {"blank", "zero", "null"}
-
 
 def classify_ds_behavior(value: str) -> str:
     """Classify an extracted Data Selection value into an edit behavior."""
     v = str(value or "").strip()
-    if v.upper() == "REMOVE":
+    low = v.lower()
+    if v.upper() == "REMOVE" or low == "blank":
         return "remove"
-    if v.lower() in _ON_HOLD_VALUES:
-        return "on_hold"
+    if low == "zero":
+        return "zero"
+    if low == "null":
+        return "null"
     return "literal"
 
 
@@ -363,7 +363,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                 data_new = str(val).strip()
 
                 # Classify behavior and, for Literal values, validate the
-                # value against the field's format rule. on_hold / remove
+                # value against the field's format rule. remove / zero / null
                 # values are not format-checked.
                 behavior = classify_ds_behavior(data_new)
                 if behavior == "literal":
