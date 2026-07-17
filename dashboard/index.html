@@ -379,9 +379,11 @@ async function loadData() {
                 '<th>New Version</th>' +
                 '<th>New Version Title</th>' +
                 '<th>Data Selections</th>' +
+                '<th>Processing Options</th>' +
                 '</tr>';
             tbody.innerHTML = preview.map(row => {
                 const dsCount = row.data_selections_count || 0;
+                const poCount = row.processing_options_count || 0;
                 return `<tr>
                     <td>${row._row || ''}</td>
                     <td>${row.app_report || ''}</td>
@@ -389,6 +391,7 @@ async function loadData() {
                     <td>${row.new_version || ''}</td>
                     <td>${row.new_version_title || ''}</td>
                     <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${dsCount}</span></td>
+                    <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${poCount}</span></td>
                 </tr>`;
             }).join('');
         } else {
@@ -447,7 +450,7 @@ function showResults(data) {
     `;
 
     const thead = document.querySelector('#results-table thead');
-    thead.innerHTML = '<tr><th>#</th><th>Report</th><th>DS</th><th>Status</th><th>Duration</th><th>Details</th></tr>';
+    thead.innerHTML = '<tr><th>#</th><th>Report</th><th>DS</th><th>PO</th><th>Status</th><th>Duration</th><th>Details</th></tr>';
 
     const tbody = document.querySelector('#results-table tbody');
     tbody.innerHTML = (data.results || []).map(r => {
@@ -457,6 +460,7 @@ function showResults(data) {
             <td>${r.iteration}</td>
             <td>${r.name}</td>
             <td>${r.data_selections_count || 0}</td>
+            <td>${r.processing_options_count || 0}</td>
             <td><span class="badge ${badge}">${r.status.toUpperCase()}</span></td>
             <td>${(r.duration_ms/1000).toFixed(1)}s</td>
             <td style="font-size:.7rem;color:var(--muted)">${errors || 'OK'}</td>

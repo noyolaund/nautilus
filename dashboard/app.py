@@ -654,12 +654,13 @@ def create_dashboard_app() -> FastAPI:
         # Log a per-column summary for debugging
         for g in _report_groups:
             _session.logger.info(
-                "Report col %s: app=%s current=%s new=%s DS=%d",
+                "Report col %s: app=%s current=%s new=%s DS=%d PO=%d",
                 g["row_index"],
                 g["report"].get("app_report"),
                 g["report"].get("current_version"),
                 g["report"].get("new_version"),
                 len(g["data_selections"]),
+                len(g["processing_options"]),
             )
 
         # Build a flat preview — one row per report group (column)
@@ -673,6 +674,7 @@ def create_dashboard_app() -> FastAPI:
                 "new_version": report.get("new_version", ""),
                 "new_version_title": report.get("new_version_title", ""),
                 "data_selections_count": len(group["data_selections"]),
+                "processing_options_count": len(group["processing_options"]),
             })
 
         return {
@@ -699,6 +701,7 @@ def create_dashboard_app() -> FastAPI:
                 "new_version": r.get("new_version", ""),
                 "new_version_title": r.get("new_version_title", ""),
                 "data_selections_count": len(g["data_selections"]),
+                "processing_options_count": len(g["processing_options"]),
             })
         return {"rows": len(_report_groups), "preview": preview}
 
@@ -786,6 +789,7 @@ def create_dashboard_app() -> FastAPI:
                 "tokens": total_tokens,
                 "screenshot": "",
                 "data_selections_count": len(group["data_selections"]),
+                "processing_options_count": len(group["processing_options"]),
                 "steps": steps_dicts,
             })
 
