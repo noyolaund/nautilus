@@ -1051,6 +1051,54 @@ async def detect_active_literal_tab(page: Page) -> Optional[str]:
     return None
 
 
+def _classify_value_shape(value: str) -> str:
+    """Classify an Excel literal value by shape:
+        'list'   → separated by ',' or ';' (one or more values)
+        'range'  → an integer range 'A - B'
+        'single' → a single string/int scalar
+    """
+    s = str(value or "").strip()
+    if _looks_like_value_list(s):
+        return "list"
+    if re.fullmatch(r"\d+\s*-\s*\d+", s):
+        return "range"
+    return "single"
+
+
+def _literal_tab_type_error(active_tab: Optional[str], value: str) -> Optional[str]:
+    """Return a human-readable error if *value*'s shape doesn't match the
+    active Literal editor tab, else None.
+
+        Single Value    → a single string/int
+        Range of Values → an integer range 'A - B'
+        List of Values  → a list of one or more values
+
+    A single value is accepted on the List tab (a one-element list); only a
+    range shape is rejected there. When the tab can't be detected we don't
+    block the write.
+    """
+    tab = (active_tab or "").strip().lower()
+    if not tab:
+        return None
+    shape = _classify_value_shape(value)
+    raw = str(value or "").strip()
+    named = {"single": "a single value", "range": "a range", "list": "a list"}[shape]
+
+    if "range" in tab:
+        if shape != "range":
+            return (f"Active tab 'Range of Values' expects an integer range "
+                    f"'A - B', but Excel value {raw!r} is {named}")
+    elif "list" in tab:
+        if shape == "range":
+            return (f"Active tab 'List of Values' expects a list of values, "
+                    f"but Excel value {raw!r} is {named}")
+    elif "single" in tab:
+        if shape != "single":
+            return (f"Active tab 'Single Value' expects a single string/int, "
+                    f"but Excel value {raw!r} is {named}")
+    return None
+
+
 async def write_literal_by_active_tab(
     page: Page, runner: StepRunner, value: str,
 ) -> None:
@@ -1062,10 +1110,20 @@ async def write_literal_by_active_tab(
         Range of Values → #LITtfFrom / #LITtfTo  (Excel value must be 'A-B')
         List of Values  → #LITtfList + #hc950 (Add) / #litList + #hc952 (Del)
                           — reconciled via sync_literal_list_values.
+
+    Before writing, the Excel value's shape is checked against the active
+    tab; a mismatch raises StepError so the report is marked failed with a
+    descriptive message instead of writing bad data into JDE.
     """
     active = await detect_active_literal_tab(page)
     tab = (active or "").strip().lower()
     print(f"      🏷 Literal editor active tab: {active!r}")
+
+    # Verify the value's data type matches the active tab before writing.
+    type_error = _literal_tab_type_error(active, value)
+    if type_error:
+        print(f"      ✖ Type check failed: {type_error}")
+        raise StepError("Literal value type check", type_error, None)
 
     if "range" in tab:
         raw = str(value or "").strip()
