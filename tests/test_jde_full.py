@@ -1051,6 +1051,15 @@ async def detect_active_literal_tab(page: Page) -> Optional[str]:
     return None
 
 
+class LiteralTypeMismatch(Exception):
+    """The Excel value's shape doesn't match the active Literal editor tab.
+
+    Raised (instead of a report-aborting StepError) so the dispatch loop can
+    record the error, leave that Data Selection unchanged, and continue with
+    the remaining fields.
+    """
+
+
 def _classify_value_shape(value: str) -> str:
     """Classify an Excel literal value by shape:
         'list'   → separated by ',' or ';' (one or more values)
@@ -1112,8 +1121,8 @@ async def write_literal_by_active_tab(
                           — reconciled via sync_literal_list_values.
 
     Before writing, the Excel value's shape is checked against the active
-    tab; a mismatch raises StepError so the report is marked failed with a
-    descriptive message instead of writing bad data into JDE.
+    tab; a mismatch raises LiteralTypeMismatch so the caller can record the
+    error and skip this field instead of writing bad data into JDE.
     """
     active = await detect_active_literal_tab(page)
     tab = (active or "").strip().lower()
@@ -1123,7 +1132,7 @@ async def write_literal_by_active_tab(
     type_error = _literal_tab_type_error(active, value)
     if type_error:
         print(f"      ✖ Type check failed: {type_error}")
-        raise StepError("Literal value type check", type_error, None)
+        raise LiteralTypeMismatch(type_error)
 
     if "range" in tab:
         raw = str(value or "").strip()
@@ -1526,6 +1535,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         await runner.key_press("Enter")
         await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
 
+        # Per-field validation errors (wrong data type for the field / tab).
+        # These don't abort the run — the field is left unchanged, the error
+        # is recorded for the report, and processing continues. If any occur,
+        # the iteration is reported as failed at the end.
+        field_errors: list[str] = []
+
         # ── Data Selection — loop once per entry ────────────────────────
         if data_selections:
             print(f"[{label}] Configuring {len(data_selections)} data selection(s)")
@@ -1546,13 +1561,17 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     print(f"[{label}]   ↳ empty value, skipping")
                     continue
 
-                # Values that failed their field's format rule are skipped so
-                # a malformed cell never gets edited into JDE.
+                # Values that failed their field's format rule are left
+                # unchanged. Record the error (so it reaches the dashboard and
+                # the report) and continue with the remaining fields.
                 if not sel.get("valid", True):
-                    print(
-                        f"[{label}]   ↳ {sel.get('validation_message') or 'invalid value'}"
-                        f" — skipping"
+                    msg = (
+                        sel.get("validation_message")
+                        or f"{left_operand}: invalid value {data_value!r}"
                     )
+                    print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
+                    runner.record_failure(f"Data Selection: {left_operand}", msg)
+                    field_errors.append(msg)
                     continue
 
                 # Constant values map to distinct behaviors (attached at parse
@@ -1581,6 +1600,13 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                             page, runner, left_operand, comparison_value, data_value,
                             right_operand=_RIGHT_OPERAND_OPTION.get(behavior, "Literal"),
                         )
+                    except LiteralTypeMismatch as tmerr:
+                        # Wrong data type for the field — leave it unset,
+                        # record the error, and keep going.
+                        msg = f"{left_operand}: {tmerr}"
+                        print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
+                        runner.record_failure(f"Data Selection: {left_operand}", str(tmerr))
+                        field_errors.append(msg)
                     except Exception as add_exc:
                         print(f"[{label}] ✖ Could not add new DS row: {add_exc}")
                         await page.screenshot(
@@ -1688,7 +1714,19 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     value="Literal",
                     selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
                 )
-                await write_literal_by_active_tab(page, runner, str(data_value))
+                try:
+                    await write_literal_by_active_tab(page, runner, str(data_value))
+                except LiteralTypeMismatch as tmerr:
+                    # The value's data type doesn't fit the active tab. Leave
+                    # the field unchanged (the literal was never committed),
+                    # record the error, and continue with the next field.
+                    msg = f"{left_operand}: {tmerr}"
+                    print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
+                    runner.record_failure(f"Data Selection: {left_operand}", str(tmerr))
+                    field_errors.append(msg)
+                    if row_is_locked and row_number:
+                        await lock_data_selection_row(runner, row_number)
+                    continue
                 await runner.screenshot()
 
                 # Restore the lock state — only for the edit branch.
@@ -1753,6 +1791,20 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
 
         # ── Done ────────────────────────────────────────────────────────
         await runner.screenshot()
+
+        # If any field had the wrong data type it was left unchanged and its
+        # error recorded — report the iteration as failed (all other fields
+        # were still processed) so the dashboard and report surface it.
+        if field_errors:
+            summary = "; ".join(field_errors)
+            print(f"[{label}] ⚠ Completed with {len(field_errors)} field error(s): {summary}")
+            return {
+                "status": "fail",
+                "error": f"{len(field_errors)} field(s) skipped: {summary}",
+                "report": report,
+                "steps": list(runner.results),
+            }
+
         print(f"[{label}] ✓ Completed successfully")
         return {
             "status": "pass",

@@ -128,6 +128,29 @@ class StepRunner:
             raise StepError(step.name, result.error_message or "Unknown error", result)
         return result
 
+    def record_failure(self, name: str, error_message: str) -> StepResult:
+        """Record a synthetic failed step without touching the browser.
+
+        Used to surface a validation error (e.g. a value that doesn't fit the
+        field's expected type) in the report and dashboard while letting the
+        run continue with the remaining work.
+        """
+        from datetime import datetime
+
+        now = datetime.now()
+        result = StepResult(
+            step_id=self._next_step_id(),
+            name=name,
+            action=ActionType.CUSTOM,
+            status=StepStatus.FAIL,
+            started_at=now,
+            finished_at=now,
+            duration_ms=0.0,
+            error_message=error_message,
+        )
+        self.results.append(result)
+        return result
+
     # ------------------------------------------------------------------
     # Public API — mirrors JSON actions
     # ------------------------------------------------------------------
