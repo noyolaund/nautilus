@@ -1,0 +1,7 @@
+{
+  "TC-JDE-CPY::S002": "button:has-text('Ingresa')",
+  "TC-JDE-CPY::S003": "input[type=\"text\"], input:not([type])",
+  "TC-JDE-CPY::S004": "input[type=\"password\"], input[placeholder*=\"Contrase\u00f1a\"], input[aria-label*=\"Contrase\u00f1a\"]",
+  "TC-JDE-CPY::S005": "button#continueNew",
+  "TC-JDE-CPY::S006": "role=link[name=\"Ofertas\"]"
+}

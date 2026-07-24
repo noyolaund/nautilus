@@ -29,8 +29,5 @@ context/
 .DS_Store
 Thumbs.db
 
-# Selector cache (auto-generated)
-config/selector_cache.json
-
 # Python command chosen by setup.bat
 .python_cmd
