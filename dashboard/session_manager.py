@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TextIO
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright, Playwright
 
@@ -32,6 +34,39 @@ from engines.hybrid_playwright_engine import HybridPlaywrightEngine
 from utils.logger import get_logger, step_log
 
 
+class _Tee:
+    """A write-through stream that forwards to several underlying streams.
+
+    Used to mirror stdout into the per-run debug log while still printing to
+    the console. Never raises to the caller if one of the streams misbehaves.
+    """
+
+    def __init__(self, *streams: TextIO) -> None:
+        self._streams = streams
+
+    def write(self, data: str) -> int:
+        for s in self._streams:
+            try:
+                s.write(data)
+            except Exception:
+                pass
+        return len(data)
+
+    def flush(self) -> None:
+        for s in self._streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+    def isatty(self) -> bool:
+        first = self._streams[0] if self._streams else None
+        try:
+            return bool(first and first.isatty())
+        except Exception:
+            return False
+
+
 class SessionManager:
     """Manages a persistent browser session for iterative workflows."""
 
@@ -44,6 +79,11 @@ class SessionManager:
         self._is_logged_in: bool = False
         self._run_dir: Optional[Path] = None
         self.logger = get_logger("qa.dashboard", log_dir="logs")
+        # Per-run debug capture (dashboard_debug.txt): tee'd stdout + a
+        # plain-text handler on the dashboard logger.
+        self._debug_file: Optional[TextIO] = None
+        self._orig_stdout: Optional[TextIO] = None
+        self._debug_log_handler: Optional[logging.Handler] = None
 
     @property
     def is_active(self) -> bool:
@@ -123,8 +163,62 @@ class SessionManager:
         (self._run_dir / "screenshots").mkdir(exist_ok=True)
         os.environ["JDE_RUN_DIR"] = str(self._run_dir.resolve())
 
+        # Start capturing all dashboard output into this run's debug log.
+        self._start_debug_capture()
+
         self.logger.info("Browser launched OK — run dir: %s", self._run_dir)
         return {"status": "started", "message": f"Browser launched ({browser_type} {width}x{height})"}
+
+    def _start_debug_capture(self) -> None:
+        """Mirror dashboard output into ``<run_dir>/dashboard_debug.txt``.
+
+        Captures both the free-form ``print()`` diagnostics from the JDE flow
+        (via a tee on stdout) and the dashboard logger records (via a plain
+        stream handler on the same file). Line-buffered so the file stays
+        readable while a run is in progress.
+        """
+        if self._run_dir is None:
+            return
+        self._stop_debug_capture()  # drop any handler from a previous run
+        debug_path = self._run_dir / "dashboard_debug.txt"
+        try:
+            self._debug_file = open(debug_path, "a", encoding="utf-8", buffering=1)
+        except Exception:
+            self.logger.warning("Could not open debug log %s", debug_path)
+            self._debug_file = None
+            return
+
+        # Tee stdout so print() diagnostics land in the debug file too.
+        self._orig_stdout = sys.stdout
+        sys.stdout = _Tee(self._orig_stdout, self._debug_file)
+
+        # Plain-text copy of the dashboard logger records into the same file.
+        handler = logging.StreamHandler(self._debug_file)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        self._debug_log_handler = handler
+        self.logger.addHandler(handler)
+        self.logger.info("Dashboard debug log: %s", debug_path)
+
+    def _stop_debug_capture(self) -> None:
+        """Restore stdout and close the per-run debug log, if active."""
+        if self._orig_stdout is not None:
+            sys.stdout = self._orig_stdout
+            self._orig_stdout = None
+        if self._debug_log_handler is not None:
+            try:
+                self.logger.removeHandler(self._debug_log_handler)
+                self._debug_log_handler.close()  # does not close the stream
+            except Exception:
+                pass
+            self._debug_log_handler = None
+        if self._debug_file is not None:
+            try:
+                self._debug_file.close()
+            except Exception:
+                pass
+            self._debug_file = None
 
     async def run_login(self, suite_request: TestSuiteRequest) -> dict[str, Any]:
         """Execute the login test case (first test_case in the suite)."""
@@ -261,4 +355,7 @@ class SessionManager:
         os.environ.pop("JDE_RUN_DIR", None)
 
         self.logger.info("Browser session closed")
+        # Flush and detach the per-run debug capture last, so the line above
+        # is included in dashboard_debug.txt.
+        self._stop_debug_capture()
         return {"status": "stopped", "message": "Browser closed"}

@@ -38,6 +38,18 @@ USERNAME = os.getenv("JDE_USERNAME", "")
 PASSWORD = os.getenv("JDE_PASSWORD", "")
 IFRAME = "iframe#e1menuAppIframe"
 
+
+def _run_screenshot_path(name: str) -> str:
+    """Resolve an error-screenshot path inside the current run's screenshots
+    folder (JDE_RUN_DIR, set by the dashboard's SessionManager), falling back
+    to the logs root when running standalone."""
+    safe = re.sub(r"[^\w\-.]", "_", name)
+    run_dir = os.getenv("JDE_RUN_DIR", "").strip()
+    base = Path(run_dir) / "screenshots" if run_dir else Path(os.getenv("LOG_DIR", "logs"))
+    base.mkdir(parents=True, exist_ok=True)
+    return str(base / f"{safe}.png")
+
+
 # Translate Excel comparison operators (Row 5+, Column B) into the visible
 # text used by JDE's Comparison dropdown ("is equal to", "is not equal to", ...).
 # Keys are lower-cased; unknown values fall through unchanged.
@@ -1610,7 +1622,9 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     except Exception as add_exc:
                         print(f"[{label}] ✖ Could not add new DS row: {add_exc}")
                         await page.screenshot(
-                            path=f"logs/jde_add_row_fail_{report.get('app_report', 'unknown')}_{idx}.png",
+                            path=_run_screenshot_path(
+                                f"jde_add_row_fail_{report.get('app_report', 'unknown')}_{idx}"
+                            ),
                             full_page=True,
                         )
                         return {"status": "fail", "error": str(add_exc), "report": report}
@@ -1818,7 +1832,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         # let the caller (dashboard) move on to the next one.
         print(f"[{label}] ✖ FAILED: {e}")
         try:
-            await page.screenshot(path=f"logs/jde_full_error_{report.get('app_report', 'unknown')}.png", full_page=True)
+            await page.screenshot(path=_run_screenshot_path(f"jde_full_error_{report.get('app_report', 'unknown')}"), full_page=True)
         except Exception:
             pass
         return {
@@ -1833,7 +1847,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         print(f"[{label}] ✖ UNEXPECTED ERROR: {type(e).__name__}: {e}")
         traceback.print_exc()
         try:
-            await page.screenshot(path=f"logs/jde_full_unexpected_{report.get('app_report', 'unknown')}.png", full_page=True)
+            await page.screenshot(path=_run_screenshot_path(f"jde_full_unexpected_{report.get('app_report', 'unknown')}"), full_page=True)
         except Exception:
             pass
         return {
