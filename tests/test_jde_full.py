@@ -1087,25 +1087,37 @@ async def _select_lit_list_option(page: Page, needle: str) -> bool:
     return False
 
 
-async def detect_active_literal_tab(page: Page) -> Optional[str]:
+async def detect_active_literal_tab(
+    page: Page, timeout_ms: int = 6000, poll_ms: int = 250,
+) -> Optional[str]:
     """Return the visible text of the currently active tab in JDE's Literal
     editor: one of 'Single Value', 'Range of Values', 'List of Values'.
 
+    The editor renders asynchronously after "Literal" is selected, so we poll
+    until the active tab appears or *timeout_ms* elapses (a single immediate
+    check often runs before the tabs exist and returns None).
+
     JDE marks the active tab with the ``ActiveTabLink`` class:
         <a class="ActiveTabLink" href="javascript:ocLitPrompt(2)">List of Values</a>
+
+    Returns None if no active tab is detected within the timeout.
     """
     js = """() => {
         const active = document.querySelector('a.ActiveTabLink');
         if (!active) return null;
         return (active.textContent || '').trim();
     }"""
-    for frame in page.frames:
-        try:
-            result = await frame.evaluate(js)
-        except Exception:
-            continue
-        if result:
-            return result
+    attempts = max(1, timeout_ms // poll_ms)
+    for attempt in range(attempts):
+        for frame in page.frames:
+            try:
+                result = await frame.evaluate(js)
+            except Exception:
+                continue
+            if result:
+                return result
+        if attempt < attempts - 1:
+            await asyncio.sleep(poll_ms / 1000)
     return None
 
 
@@ -1115,6 +1127,15 @@ class LiteralTypeMismatch(Exception):
     Raised (instead of a report-aborting StepError) so the dispatch loop can
     record the error, leave that Data Selection unchanged, and continue with
     the remaining fields.
+    """
+
+
+class LiteralTabNotDetected(Exception):
+    """The active Literal editor tab could not be detected within the timeout.
+
+    Without the active tab we can't tell which data type the field expects, so
+    the dispatch loop records a warning, leaves the field unchanged, and
+    continues with the remaining fields / versions.
     """
 
 
@@ -1180,11 +1201,21 @@ async def write_literal_by_active_tab(
 
     Before writing, the Excel value's shape is checked against the active
     tab; a mismatch raises LiteralTypeMismatch so the caller can record the
-    error and skip this field instead of writing bad data into JDE.
+    error and skip this field instead of writing bad data into JDE. If the
+    active tab can't be detected at all, LiteralTabNotDetected is raised.
     """
     active = await detect_active_literal_tab(page)
     tab = (active or "").strip().lower()
     print(f"      🏷 Literal editor active tab: {active!r}")
+
+    # The active tab defines the required data type. If we can't detect it we
+    # must not guess (writing to the wrong control corrupts the selection) —
+    # signal the caller to record a warning and skip this field.
+    if not tab:
+        raise LiteralTabNotDetected(
+            "could not detect the active Literal editor tab after waiting; "
+            "cannot determine the required data type — field left unchanged"
+        )
 
     # Verify the value's data type matches the active tab before writing.
     type_error = _literal_tab_type_error(active, value)
@@ -1215,8 +1246,8 @@ async def write_literal_by_active_tab(
         await sync_literal_list_values(page, runner, str(value))
         return
 
-    # Default / Single Value (also the safe fallback when the active tab
-    # can't be detected — the classic single-literal flow).
+    # Single Value — the classic single-literal flow (active tab confirmed
+    # above; an undetected tab already raised LiteralTabNotDetected).
     await fill_jde_field(page, "#LITtf", str(value))
     await runner.click(
         "Select button", selector="#hc_Select",
@@ -1598,6 +1629,9 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         # is recorded for the report, and processing continues. If any occur,
         # the iteration is reported as failed at the end.
         field_errors: list[str] = []
+        # Non-fatal warnings (e.g. the active Literal tab could not be
+        # detected). Recorded to the report but don't fail the iteration.
+        field_warnings: list[str] = []
 
         # ── Data Selection — loop once per entry ────────────────────────
         if data_selections:
@@ -1665,6 +1699,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
                         runner.record_failure(f"Data Selection: {left_operand}", str(tmerr))
                         field_errors.append(msg)
+                    except LiteralTabNotDetected as tnderr:
+                        # Active tab undetected — warn and keep going.
+                        msg = f"{left_operand}: {tnderr}"
+                        print(f"[{label}]   ↳ ⚠ {msg} — leaving field unchanged")
+                        runner.record_warning(f"Data Selection: {left_operand}", str(tnderr))
+                        field_warnings.append(msg)
                     except Exception as add_exc:
                         print(f"[{label}] ✖ Could not add new DS row: {add_exc}")
                         await page.screenshot(
@@ -1787,6 +1827,17 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     if row_is_locked and row_number:
                         await lock_data_selection_row(runner, row_number)
                     continue
+                except LiteralTabNotDetected as tnderr:
+                    # Active tab couldn't be detected — we can't tell the
+                    # required data type. Record a warning, leave the field
+                    # unchanged, and continue with the remaining fields.
+                    msg = f"{left_operand}: {tnderr}"
+                    print(f"[{label}]   ↳ ⚠ {msg} — leaving field unchanged (warning)")
+                    runner.record_warning(f"Data Selection: {left_operand}", str(tnderr))
+                    field_warnings.append(msg)
+                    if row_is_locked and row_number:
+                        await lock_data_selection_row(runner, row_number)
+                    continue
                 await runner.screenshot()
 
                 # Restore the lock state — only for the edit branch.
@@ -1876,6 +1927,10 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         # ── Done ────────────────────────────────────────────────────────
         await runner.screenshot()
 
+        warn_summary = "; ".join(field_warnings)
+        if field_warnings:
+            print(f"[{label}] ⚠ {len(field_warnings)} warning(s): {warn_summary}")
+
         # If any field had the wrong data type it was left unchanged and its
         # error recorded — report the iteration as failed (all other fields
         # were still processed) so the dashboard and report surface it.
@@ -1885,14 +1940,18 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             return {
                 "status": "fail",
                 "error": f"{len(field_errors)} field(s) skipped: {summary}",
+                "warnings": warn_summary,
                 "report": report,
                 "steps": list(runner.results),
             }
 
+        # Warnings alone don't fail the iteration — they're recorded as
+        # warning steps and surfaced in the report, and the run continues.
         print(f"[{label}] ✓ Completed successfully")
         return {
             "status": "pass",
             "error": None,
+            "warnings": warn_summary,
             "report": report,
             "steps": list(runner.results),
         }

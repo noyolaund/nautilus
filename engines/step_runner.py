@@ -151,6 +151,29 @@ class StepRunner:
         self.results.append(result)
         return result
 
+    def record_warning(self, name: str, message: str) -> StepResult:
+        """Record a synthetic warning step (status SKIP) without touching the
+        browser.
+
+        Used to surface a non-fatal problem (e.g. the active tab could not be
+        detected) in the report and dashboard while letting the run continue.
+        """
+        from datetime import datetime
+
+        now = datetime.now()
+        result = StepResult(
+            step_id=self._next_step_id(),
+            name=name,
+            action=ActionType.CUSTOM,
+            status=StepStatus.SKIP,
+            started_at=now,
+            finished_at=now,
+            duration_ms=0.0,
+            error_message=f"WARNING: {message}",
+        )
+        self.results.append(result)
+        return result
+
     # ------------------------------------------------------------------
     # Public API — mirrors JSON actions
     # ------------------------------------------------------------------
