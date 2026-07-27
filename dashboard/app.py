@@ -135,7 +135,7 @@ def _clean_left_operand(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Data Selection value rules — behavior + per-field format validation
+# Data Selection value behavior
 # ---------------------------------------------------------------------------
 #
 # Every extracted Data Selection value is classified into an edit *behavior*:
@@ -145,9 +145,10 @@ def _clean_left_operand(raw: str) -> str:
 #   "null"    → select the "Null" option in the Right Operand combo box
 #   "literal" → a concrete value written via the Literal editor (default)
 #
-# Only "literal" values are format-checked against the field's rule below.
-# A malformed literal is flagged (valid=False) so the executor can skip that
-# single Data Selection instead of writing a bad value into JDE.
+# The required data *type* for a literal is NOT inferred from the Left Operand
+# name — it is determined at execution time from JDE's active Literal tab
+# (Single Value / Range of Values / List of Values). See the executor's
+# detect_active_literal_tab / _literal_tab_type_error.
 
 
 def classify_ds_behavior(value: str) -> str:
@@ -161,70 +162,6 @@ def classify_ds_behavior(value: str) -> str:
     if low == "null":
         return "null"
     return "literal"
-
-
-def _ds_tokens(value: str) -> list[str]:
-    """Split a ';'-separated value into trimmed, non-empty tokens."""
-    return [t.strip() for t in str(value).split(";") if t.strip()]
-
-
-def _rule_code_list(min_len: int, max_len: int):
-    """Build a validator: one or more alphanumeric codes of the given length,
-    separated by ';' (e.g. Order Type 'SA; SF', Line Type 'S; W2')."""
-    def check(value: str) -> bool:
-        toks = _ds_tokens(value)
-        return bool(toks) and all(
-            t.isalnum() and min_len <= len(t) <= max_len for t in toks
-        )
-    return check
-
-
-def _rule_int_range(value: str) -> bool:
-    """Validator: an integer range 'N - M' (e.g. Status Code '520 - 600')."""
-    return bool(re.fullmatch(r"\s*\d+\s*-\s*\d+\s*", str(value)))
-
-
-def _rule_single_int(value: str) -> bool:
-    """Validator: a single non-negative integer."""
-    return bool(re.fullmatch(r"\s*\d+\s*", str(value)))
-
-
-def _rule_string(value: str) -> bool:
-    """Validator: any non-empty string."""
-    return bool(str(value).strip())
-
-
-# Per-field rules keyed by the cleaned Left Operand name (see
-# _clean_left_operand). Each entry is (validator, human-readable expectation).
-# Left Operands not listed here are not format-checked.
-_FIELD_RULES: dict[str, tuple] = {
-    "order type":           (_rule_code_list(2, 2), "one or more 2-character codes separated by ';' (e.g. 'SA; SF')"),
-    "line type":            (_rule_code_list(1, 2), "one or more 1-2 character codes separated by ';' (e.g. 'S; W2')"),
-    # JDE names this field "Status Code - Next" (NXTR); plain "Status Code"
-    # is kept so either spelling is validated.
-    "status code - next":   (_rule_int_range,       "an integer range 'N - M' (e.g. '569 - 620')"),
-    "status code":          (_rule_int_range,       "an integer range 'N - M' (e.g. '569 - 620')"),
-    "inter branch sales":   (_rule_single_int,      "a single integer"),
-    "order company":        (_rule_single_int,      "a single integer"),
-    "original document no": (_rule_single_int,      "a single integer"),
-    "tax rate/area":        (_rule_string,          "a non-empty string"),
-}
-
-
-def validate_ds_value(left_operand: str, value: str) -> tuple[bool, str]:
-    """Validate a Literal Data Selection value against its field rule.
-
-    Returns (ok, message). Left Operands without a rule are accepted (ok=True,
-    empty message).
-    """
-    key = str(left_operand or "").strip().lower()
-    rule = _FIELD_RULES.get(key)
-    if rule is None:
-        return True, ""
-    check, expectation = rule
-    if check(value):
-        return True, ""
-    return False, f"{left_operand!r} expects {expectation}; got {value!r}"
 
 
 def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict], list[dict]]:
@@ -362,24 +299,14 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     continue
                 data_new = str(val).strip()
 
-                # Classify behavior and, for Literal values, validate the
-                # value against the field's format rule. remove / zero / null
-                # values are not format-checked.
-                behavior = classify_ds_behavior(data_new)
-                if behavior == "literal":
-                    valid, validation_message = validate_ds_value(
-                        r["left_operand"], data_new
-                    )
-                else:
-                    valid, validation_message = True, ""
-
+                # Classify the edit behavior (remove / zero / null / literal).
+                # The literal data type is verified at execution time from
+                # JDE's active tab, not from the Left Operand name.
                 data_selections.append({
                     "left_operand": r["left_operand"],
                     "comparison": r["comparison"],
                     "data_new": data_new,
-                    "behavior": behavior,
-                    "valid": valid,
-                    "validation_message": validation_message,
+                    "behavior": classify_ds_behavior(data_new),
                     "_source_row": r["row_index"],
                 })
 

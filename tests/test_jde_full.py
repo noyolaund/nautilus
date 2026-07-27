@@ -1653,23 +1653,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     print(f"[{label}]   ↳ empty value, skipping")
                     continue
 
-                # Values that failed their field's format rule are left
-                # unchanged. Record the error (so it reaches the dashboard and
-                # the report) and continue with the remaining fields.
-                if not sel.get("valid", True):
-                    msg = (
-                        sel.get("validation_message")
-                        or f"{left_operand}: invalid value {data_value!r}"
-                    )
-                    print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
-                    runner.record_failure(f"Data Selection: {left_operand}", msg)
-                    field_errors.append(msg)
-                    continue
-
                 # Constant values map to distinct behaviors (attached at parse
                 # time): "remove" (REMOVE / Blank) deletes the row; "zero" /
                 # "null" select that option in the Right Operand combo box;
-                # everything else is a "literal" written via the Literal editor.
+                # everything else is a "literal". The literal's data type is
+                # verified at write time against JDE's active tab (see
+                # write_literal_by_active_tab), not from the Left Operand name.
                 behavior = sel.get("behavior", "literal")
 
                 # Find the matching RightOperand row by scanning all
