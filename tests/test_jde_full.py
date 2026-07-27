@@ -668,6 +668,52 @@ async def find_processing_option_tab(page: Page, tab_name: str) -> Optional[str]
     return None
 
 
+# Some JDE versions render the Processing Options tabs as a combo box instead
+# of clickable anchor tabs. This is its id.
+PO_TAB_COMBO_SELECTOR = "#jdeWebTabBodynull"
+
+
+async def find_po_tab_combo_option(
+    page: Page, tab_name: str,
+) -> tuple[str, Optional[str], Optional[list]]:
+    """Detect whether the Processing Options tabs are a combo box
+    (#jdeWebTabBodynull) and, if so, resolve the option matching *tab_name*.
+
+    Returns (status, label, options):
+        "not_present" → combo absent in every frame → use the anchor-tab click
+        "matched"     → *label* is the exact option text to select
+        "no_match"    → combo present but no option matches; *options* lists
+                        the available tab labels
+    """
+    js = """(needle) => {
+        const norm = (s) => (s || '')
+            .split(/[\\s\\u00A0]+/).filter(Boolean).join(' ').toLowerCase();
+        const sel = document.querySelector('#jdeWebTabBodynull');
+        if (!sel) return { status: 'not_present' };
+        const opts = Array.from(sel.options || []);
+        const labels = opts.map(o => (o.textContent || '').trim()).filter(Boolean);
+        const target = norm(needle);
+        if (!target) return { status: 'no_match', options: labels };
+        // Prefer an exact normalized match, then a containing match.
+        let hit = opts.find(o => norm(o.textContent) === target)
+               || opts.find(o => norm(o.textContent).includes(target));
+        if (!hit) return { status: 'no_match', options: labels };
+        return { status: 'matched', label: (hit.textContent || '').trim() };
+    }"""
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js, tab_name)
+        except Exception:
+            continue
+        if not result:
+            continue
+        status = result.get("status")
+        if status == "not_present":
+            continue  # combo not in this frame — keep looking
+        return status, result.get("label"), result.get("options")
+    return "not_present", None, None
+
+
 # Frames are searched JDE-app-first: the PO input we want (e.g. P01T0) lives
 # in e1menuAppIframe, while the left-panel fast-path field sits in its own
 # iframe and would otherwise shadow it.
@@ -1779,20 +1825,44 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     print(f"[{label}]   ↳ no option label, skipping")
                     continue
 
-                # 1. Click the tab by name
+                # 1. Activate the tab. Newer JDE versions render the PO tabs
+                #    as a combo box (#jdeWebTabBodynull); older ones use
+                #    clickable anchor tabs. Detect which and act accordingly.
                 if tab:
-                    tab_selector = await find_processing_option_tab(page, tab)
-                    if not tab_selector:
+                    combo_status, combo_label, combo_opts = (
+                        await find_po_tab_combo_option(page, tab)
+                    )
+                    if combo_status == "matched":
+                        print(
+                            f"      Tab {tab!r} → combo box "
+                            f"{PO_TAB_COMBO_SELECTOR} option {combo_label!r}"
+                        )
+                        await runner.select(
+                            f"Processing Options tab {tab!r}",
+                            value=combo_label,
+                            selector=PO_TAB_COMBO_SELECTOR,
+                            iframe=IFRAME, selector_strategy="css",
+                        )
+                    elif combo_status == "no_match":
                         raise StepError(
-                            "Find Processing Options tab",
-                            f"Could not find tab named {tab!r}",
+                            "Select Processing Options tab",
+                            f"Tab {tab!r} not found in combo box "
+                            f"{PO_TAB_COMBO_SELECTOR}; available: {combo_opts}",
                             None,
                         )
-                    print(f"      Tab matched: {tab_selector}")
-                    await runner.click(
-                        f"Tab {tab!r}",
-                        selector=tab_selector, iframe=IFRAME, selector_strategy="css",
-                    )
+                    else:  # not_present → classic clickable anchor tabs
+                        tab_selector = await find_processing_option_tab(page, tab)
+                        if not tab_selector:
+                            raise StepError(
+                                "Find Processing Options tab",
+                                f"Could not find tab named {tab!r}",
+                                None,
+                            )
+                        print(f"      Tab matched: {tab_selector}")
+                        await runner.click(
+                            f"Tab {tab!r}",
+                            selector=tab_selector, iframe=IFRAME, selector_strategy="css",
+                        )
                     # Give the tab content time to render
                     await asyncio.sleep(1)
 
