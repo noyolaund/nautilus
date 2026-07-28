@@ -208,25 +208,48 @@ async def list_left_operands(
     return [], None
 
 
+def _clean_operand_for_match(value: str) -> str:
+    """Normalize a Left Operand name for matching by dropping the parenthesized
+    and bracketed qualifiers JDE appends — data item description, table, alias,
+    and section tag — then lower-casing:
+
+        'Order Company (Order Number) (F4211) (KCOO) [BC]' → 'order company'
+
+    This makes the enumerated grid value comparable to the cleaned Excel value,
+    and groups duplicates that differ only by table (F4201 vs F4211).
+    """
+    s = re.sub(r"\([^)]*\)", " ", str(value or ""))
+    s = re.sub(r"\[[^\]]*\]", " ", s)
+    return _norm_ws(s).lower()
+
+
 def _match_left_operand_row(
     rows: list[dict], needle: str, occurrence: int,
 ) -> Optional[dict]:
     """Return the *occurrence*-th row (1-based, document order) whose Left
-    Operand matches *needle* (already whitespace-normalized + lower-cased).
+    Operand matches *needle*.
 
-    Exact (normalized, case-insensitive) matches are preferred; otherwise the
-    shortest-containing group is used so a shorter needle can't hijack a longer
-    row ("Business Unit" vs "Business Unit - Header"). Returns None if fewer
-    than *occurrence* rows match.
+    Both the grid value and the needle are normalized with
+    _clean_operand_for_match (parenthesized/bracketed qualifiers stripped), so
+    the same field from different tables (F4201 vs F4211) groups together.
+    Exact matches are preferred; otherwise the shortest-containing group is
+    used so a shorter needle can't hijack a longer row ("Business Unit" vs
+    "Business Unit - Header"). Returns None if fewer than *occurrence* rows
+    match.
     """
-    exact = [r for r in rows if r["value"].strip().lower() == needle]
+    key = _clean_operand_for_match(needle)
+
+    def norm(r: dict) -> str:
+        return _clean_operand_for_match(r["value"])
+
+    exact = [r for r in rows if norm(r) == key]
     group = exact
-    if not group:
-        subs = [r for r in rows if needle and needle in r["value"].strip().lower()]
+    if not group and key:
+        subs = [r for r in rows if key in norm(r)]
         if subs:
-            shortest_len = min(len(r["value"]) for r in subs)
-            keep = next(r["value"] for r in subs if len(r["value"]) == shortest_len)
-            group = [r for r in subs if r["value"] == keep]
+            shortest_len = min(len(norm(r)) for r in subs)
+            keep = next(norm(r) for r in subs if len(norm(r)) == shortest_len)
+            group = [r for r in subs if norm(r) == keep]
     if len(group) >= occurrence:
         return group[occurrence - 1]
     return None
