@@ -1813,6 +1813,11 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             # Wait for the Processing Options dialog to fully render its tabs
             await asyncio.sleep(2)
 
+            # Track the currently-active tab so we only (re)activate it when it
+            # changes. Re-clicking an anchor tab resets values already written
+            # on it, so consecutive options on the same tab must NOT re-click.
+            current_tab: Optional[str] = None
+
             for idx, po in enumerate(processing_options, 1):
                 tab = po.get("tab", "")
                 # Column B — the option's label text, searched in JDE to find
@@ -1833,10 +1838,15 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     print(f"[{label}]   ↳ no option label, skipping")
                     continue
 
-                # 1. Activate the tab. Newer JDE versions render the PO tabs
-                #    as a combo box (#jdeWebTabBodynull); older ones use
-                #    clickable anchor tabs. Detect which and act accordingly.
-                if tab:
+                # 1. Activate the tab — but only if it differs from the one
+                #    already active. Re-activating the same tab re-renders it
+                #    and resets values written on it, so consecutive options
+                #    sharing a tab must not re-click/re-select. Works for both
+                #    the combo box (#jdeWebTabBodynull) and clickable anchor
+                #    tabs.
+                if tab and _norm_ws(tab).lower() == current_tab:
+                    print(f"      Tab {tab!r} already active — not re-activating")
+                elif tab:
                     combo_status, combo_label, combo_opts = (
                         await find_po_tab_combo_option(page, tab)
                     )
@@ -1871,6 +1881,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                             f"Tab {tab!r}",
                             selector=tab_selector, iframe=IFRAME, selector_strategy="css",
                         )
+                    current_tab = _norm_ws(tab).lower()
                     # Give the tab content time to render
                     await asyncio.sleep(1)
 
