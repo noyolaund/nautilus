@@ -167,10 +167,19 @@ _JS_LIST_LEFT_OPERANDS = """() => {
 }"""
 
 
-async def list_left_operands(page: Page) -> tuple[list[dict], Optional[str]]:
+async def list_left_operands(
+    page: Page, settle_ms: int = 0,
+) -> tuple[list[dict], Optional[str]]:
     """Enumerate the Left Operand column of #jdeGrid (locked + unlocked) row by
     row and log the complete list. Returns (rows, frame_label) where rows is
-    ``[{n, value, locked, source}]`` in document (top-to-bottom) order."""
+    ``[{n, value, locked, source}]`` in document (top-to-bottom) order.
+
+    *settle_ms* waits before enumerating — use a few seconds the first time the
+    Data Selection dialog opens (it renders asynchronously), a short settle
+    after a row is added/removed, and 0 when the DOM is known to be ready.
+    """
+    if settle_ms > 0:
+        await asyncio.sleep(settle_ms / 1000)
     for p in list(page.context.pages):
         try:
             frames = p.frames
@@ -225,14 +234,18 @@ def _match_left_operand_row(
 
 async def find_right_operand_selector(
     page: Page, left_operand_text: str, occurrence: int = 1,
+    rows: Optional[list[dict]] = None,
 ) -> str:
     """Find the Data Selection row whose Left Operand matches *left_operand_text*
     and return its '#RightOperand{N}' selector.
 
-    The whole Left Operand column of #jdeGrid is enumerated first (locked rows
-    via the column-2 StaticText span, unlocked rows via the selected option's
-    `displayvalue`) and logged, then matched. *occurrence* (1-based) selects
-    among duplicated Left Operands — the Nth matching row in document order.
+    *rows* is a pre-fetched Left Operand enumeration (from list_left_operands),
+    reused across the whole Data Selection loop so the grid is scanned once
+    rather than per field. When omitted, the grid is enumerated on demand
+    (with the initial render wait) — used by standalone callers.
+
+    *occurrence* (1-based) selects among duplicated Left Operands — the Nth
+    matching row in document order.
 
     Raises LookupError if nothing matches (which routes to the add-new-row
     path in the caller).
@@ -246,11 +259,9 @@ async def find_right_operand_selector(
         f"(needle={needle!r}, occurrence={occurrence})"
     )
 
-    # Wait for the Data Selection dialog to finish rendering on the current page
-    print(f"  ↳ Waiting for Data Selection dialog to render...")
-    await asyncio.sleep(5)
-
-    rows, _frame = await list_left_operands(page)
+    if rows is None:
+        # No cached enumeration — scan now (wait for the dialog to render).
+        rows, _frame = await list_left_operands(page, settle_ms=5000)
     if not rows:
         raise LookupError(
             f"No Data Selection rows found (#jdeGrid) — cannot locate "
@@ -1549,6 +1560,13 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
             await runner.click("Data Selection option", selector="#HE0_127", iframe=IFRAME, selector_strategy="css")
 
+            # Enumerate the Left Operand column ONCE for the whole dialog (the
+            # grid doesn't change on a value edit — only when a row is added or
+            # removed, after which lo_rows is refreshed). Reused for every field
+            # so duplicated Left Operands map their Nth entry to the Nth row.
+            print(f"[{label}] Enumerating Left Operand column (one-time)...")
+            lo_rows, _ = await list_left_operands(page, settle_ms=5000)
+
             for idx, sel in enumerate(data_selections, 1):
                 left_operand = sel.get("left_operand", "")
                 data_value = sel.get("data_new", "")
@@ -1584,7 +1602,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 # otherwise add a brand-new row with the right combo option.
                 try:
                     right_operand_sel = await find_right_operand_selector(
-                        page, left_operand, occurrence=occurrence,
+                        page, left_operand, occurrence=occurrence, rows=lo_rows,
                     )
                 except LookupError as exc:
                     if behavior == "remove":
@@ -1599,6 +1617,8 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                             page, runner, left_operand, comparison_value, data_value,
                             right_operand=_RIGHT_OPERAND_OPTION.get(behavior, "Literal"),
                         )
+                        # A new row changed the grid — refresh the cache.
+                        lo_rows, _ = await list_left_operands(page, settle_ms=1000)
                     except LiteralTypeMismatch as tmerr:
                         # Wrong data type for the field — leave it unset,
                         # record the error, and keep going.
@@ -1699,6 +1719,8 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         selector="#hc952", iframe=IFRAME, selector_strategy="css",
                     )
                     await runner.screenshot()
+                    # A deleted row changed the grid — refresh the cache.
+                    lo_rows, _ = await list_left_operands(page, settle_ms=1000)
                     continue
 
                 # ── Zero / Null branch ───────────────────────────────────
