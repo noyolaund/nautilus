@@ -105,65 +105,72 @@ def resolve_comparison(raw: str) -> str:
 # Login flow (used when running standalone)
 # ---------------------------------------------------------------------------
 
-# Resolve the occurrence-th data-selection row for a duplicated Left Operand
-# (e.g. two "Order Company" rows), in document (top-to-bottom) order, so the
-# Nth Excel entry maps to the Nth JDE row. Works for locked and unlocked rows
-# via the same effective cell-text extraction as find_right_operand_selector's
-# Strategy 2. Each row's Left Operand text is the SHORTEST cell whose text
-# contains the target; the duplicate group is the rows sharing that shortest
-# text — which avoids matching comparison/right-operand cells and stops a
-# shorter needle from hijacking a longer row ("Business Unit" vs "... Header").
-_JS_FIND_NTH_DUPLICATE_ROW = """({ needle, occurrence }) => {
-    const norm = (s) => (s || '')
-        .split(/[\\s\\u00A0]+/).filter(Boolean).join(' ').toLowerCase();
-    const target = norm(needle);
-    const occ = Math.max(1, occurrence | 0);
-    if (!target) return { count: 0, n: null, all: [] };
-    const cellText = (td) => {
-        const sels = td.querySelectorAll('select');
-        if (sels.length) {
-            const parts = [];
-            for (const s of sels) {
-                const o = s.options[s.selectedIndex];
-                if (o) parts.push(o.textContent || '');
-            }
-            return norm(parts.join(' '));
-        }
-        return norm(td.textContent);
-    };
-    const rows = [];  // { n, text } in DOM order
-    const boxes = document.querySelectorAll("input[type='checkbox'][id^='Select']");
+def _norm_ws(s: str) -> str:
+    """Collapse all whitespace (including NBSP) to single spaces and trim."""
+    return " ".join(str(s or "").split())
+
+
+# Enumerate the Left Operand column of JDE's Data Selection grid, row by row.
+#
+# Grid layout (#jdeGrid): column 1 is "Operator" (And/Or), column 2 is the
+# Left Operand. Rows come in two forms:
+#   - Unlocked: the Left Operand cell holds a <select id="LeftOperandN">; the
+#     display name is the selected option's `displayvalue` attribute.
+#   - Locked:   the Left Operand cell holds a <span class="StaticText">. The
+#     Operator column also uses StaticText, so we take the span in the Left
+#     Operand column (detected from an unlocked row's select column, falling
+#     back to the 2nd StaticText in the row).
+# Row number N comes from the row's #SelectN checkbox (present in every row).
+_JS_LIST_LEFT_OPERANDS = """() => {
+    const scope = document.querySelector('#jdeGrid') || document;
+    const boxes = scope.querySelectorAll("input[type='checkbox'][id^='Select']");
+    if (!boxes.length) return null;
+    const norm = (s) => (s || '').split(/[\\s\\u00A0]+/).filter(Boolean).join(' ');
+
+    // Detect the Left Operand column index from any unlocked row's select.
+    let leftCol = -1;
     for (const cb of boxes) {
-        const m = cb.id.match(/^Select(\\d+)$/);
-        if (!m) continue;
-        const tr = cb.closest('tr');
-        if (!tr) continue;
-        let best = null;
-        for (const td of tr.querySelectorAll('td')) {
-            const t = cellText(td);
-            if (t && t.includes(target) && (best === null || t.length < best.length)) best = t;
+        const tr = cb.closest('tr'); if (!tr) continue;
+        const sel = tr.querySelector("select[id^='LeftOperand']");
+        if (sel) {
+            const td = sel.closest('td');
+            if (td) { leftCol = Array.prototype.indexOf.call(tr.children, td); break; }
         }
-        if (best !== null) rows.push({ n: m[1], text: best });
     }
-    if (!rows.length) return { count: 0, n: null, all: [] };
-    let minLen = Infinity, shortest = '';
-    for (const r of rows) if (r.text.length < minLen) { minLen = r.text.length; shortest = r.text; }
-    const group = rows.filter(r => r.text === shortest);
-    return {
-        count: group.length,
-        n: (group.length >= occ ? group[occ - 1].n : null),
-        all: group.map(r => r.n),
-        groupText: shortest,
-    };
+
+    const rows = [];
+    for (const cb of boxes) {
+        const m = cb.id.match(/^Select(\\d+)$/); if (!m) continue;
+        const tr = cb.closest('tr'); if (!tr) continue;
+        let value = '', locked = false, source = '';
+        const sel = tr.querySelector("select[id^='LeftOperand']");
+        if (sel) {
+            const opt = sel.options[sel.selectedIndex];
+            value = opt ? (opt.getAttribute('displayvalue') || opt.textContent || '') : '';
+            locked = false; source = 'select';
+        } else {
+            locked = true;
+            const cell = (leftCol >= 0 && tr.children[leftCol]) ? tr.children[leftCol] : null;
+            if (cell) {
+                const span = cell.querySelector('span.StaticText, .StaticText');
+                value = (span ? span.textContent : cell.textContent) || '';
+                source = 'grid-col';
+            } else {
+                const st = tr.querySelectorAll('span.StaticText, .StaticText');
+                if (st.length >= 2) { value = st[1].textContent || ''; source = 'static-2nd'; }
+                else if (st.length === 1) { value = st[0].textContent || ''; source = 'static-1st'; }
+            }
+        }
+        rows.push({ n: m[1], value: norm(value), locked: locked, source: source });
+    }
+    return { leftCol: leftCol, rows: rows, usedGrid: !!document.querySelector('#jdeGrid') };
 }"""
 
 
-async def _find_nth_duplicate_right_operand(
-    page: Page, left_operand_text: str, occurrence: int,
-) -> str:
-    """Return '#RightOperand{N}' for the *occurrence*-th row whose Left Operand
-    exactly matches *left_operand_text* (document order). Raises LookupError if
-    there are fewer than *occurrence* such rows."""
+async def list_left_operands(page: Page) -> tuple[list[dict], Optional[str]]:
+    """Enumerate the Left Operand column of #jdeGrid (locked + unlocked) row by
+    row and log the complete list. Returns (rows, frame_label) where rows is
+    ``[{n, value, locked, source}]`` in document (top-to-bottom) order."""
     for p in list(page.context.pages):
         try:
             frames = p.frames
@@ -171,60 +178,69 @@ async def _find_nth_duplicate_right_operand(
             continue
         for frame in frames:
             try:
-                res = await frame.evaluate(
-                    _JS_FIND_NTH_DUPLICATE_ROW,
-                    {"needle": left_operand_text, "occurrence": occurrence},
-                )
+                res = await frame.evaluate(_JS_LIST_LEFT_OPERANDS)
             except Exception:
                 continue
-            if not res:
+            if not res or not res.get("rows"):
                 continue
-            count = res.get("count", 0)
-            if count and res.get("n"):
-                selector = f"#RightOperand{res['n']}"
+            rows = res["rows"]
+            frame_label = frame.name or frame.url[:60] or "main"
+            print(
+                f"  ↳ Left Operand column "
+                f"({'#jdeGrid' if res.get('usedGrid') else 'document'}, "
+                f"leftCol={res.get('leftCol')}) in frame [{frame_label}]: {len(rows)} row(s)"
+            )
+            for r in rows:
                 print(
-                    f"  ↳ MATCH occurrence #{occurrence} of {left_operand_text!r}: "
-                    f"{selector} (of {count} matching row(s): {res.get('all')})"
+                    f"      row {r['n']}: {r['value']!r} "
+                    f"(locked={r['locked']}, via {r['source']})"
                 )
-                return selector
-            if count:
-                print(
-                    f"  ↳ Found {count} {left_operand_text!r} row(s) but need "
-                    f"occurrence #{occurrence}"
-                )
-    raise LookupError(
-        f"Occurrence #{occurrence} of Left Operand '{left_operand_text}' not found "
-        f"(fewer than {occurrence} matching rows in JDE)"
-    )
+            return rows, frame_label
+    return [], None
+
+
+def _match_left_operand_row(
+    rows: list[dict], needle: str, occurrence: int,
+) -> Optional[dict]:
+    """Return the *occurrence*-th row (1-based, document order) whose Left
+    Operand matches *needle* (already whitespace-normalized + lower-cased).
+
+    Exact (normalized, case-insensitive) matches are preferred; otherwise the
+    shortest-containing group is used so a shorter needle can't hijack a longer
+    row ("Business Unit" vs "Business Unit - Header"). Returns None if fewer
+    than *occurrence* rows match.
+    """
+    exact = [r for r in rows if r["value"].strip().lower() == needle]
+    group = exact
+    if not group:
+        subs = [r for r in rows if needle and needle in r["value"].strip().lower()]
+        if subs:
+            shortest_len = min(len(r["value"]) for r in subs)
+            keep = next(r["value"] for r in subs if len(r["value"]) == shortest_len)
+            group = [r for r in subs if r["value"] == keep]
+    if len(group) >= occurrence:
+        return group[occurrence - 1]
+    return None
 
 
 async def find_right_operand_selector(
     page: Page, left_operand_text: str, occurrence: int = 1,
 ) -> str:
-    """Find the data-selection row whose Left Operand matches *left_operand_text*
-    and return the matching '#RightOperand{N}' selector.
+    """Find the Data Selection row whose Left Operand matches *left_operand_text*
+    and return its '#RightOperand{N}' selector.
 
-    Works for both row layouts:
-      - Unlocked row: matches the SELECTED option text of LeftOperand{N}
-      - Locked row:   matches the static text in any <td> cell
-                      (locked rows don't render a LeftOperand select at all)
+    The whole Left Operand column of #jdeGrid is enumerated first (locked rows
+    via the column-2 StaticText span, unlocked rows via the selected option's
+    `displayvalue`) and logged, then matched. *occurrence* (1-based) selects
+    among duplicated Left Operands — the Nth matching row in document order.
 
-    Matching is whitespace-normalized substring (handles \\xa0 NBSP), with a
-    Levenshtein fuzzy fallback for typos. Strategy "any-option" (any option
-    of any dropdown) is NOT used here because every LeftOperand dropdown
-    holds the same 54 field-name options, so it would always match the first
-    dropdown — producing wrong row numbers.
-
-    *occurrence* (1-based) selects among duplicated Left Operands: occurrence
-    2+ resolves the Nth exact-match row in document order (see
-    _find_nth_duplicate_right_operand).
-
-    Raises LookupError if nothing matches.
+    Raises LookupError if nothing matches (which routes to the add-new-row
+    path in the caller).
     """
     if not left_operand_text:
         raise LookupError("Empty left_operand value — cannot determine RightOperand selector")
 
-    needle = left_operand_text.strip().lower()
+    needle = _norm_ws(left_operand_text).lower()
     print(
         f"  ↳ Searching for left operand: {left_operand_text!r} "
         f"(needle={needle!r}, occurrence={occurrence})"
@@ -234,314 +250,26 @@ async def find_right_operand_selector(
     print(f"  ↳ Waiting for Data Selection dialog to render...")
     await asyncio.sleep(5)
 
-    # Duplicated Left Operands: resolve the Nth matching row directly so the
-    # Nth Excel entry maps to the Nth JDE row.
-    if occurrence > 1:
-        return await _find_nth_duplicate_right_operand(page, left_operand_text, occurrence)
+    rows, _frame = await list_left_operands(page)
+    if not rows:
+        raise LookupError(
+            f"No Data Selection rows found (#jdeGrid) — cannot locate "
+            f"'{left_operand_text}'"
+        )
 
-    # JS that returns a diagnostic dump of every LeftOperand* in a frame
-    js_inspect = """() => {
-        const selects = document.querySelectorAll("select[id^='LeftOperand']");
-        const out = [];
-        for (const sel of selects) {
-            const selectedOpt = sel.options[sel.selectedIndex];
-            const allTexts = Array.from(sel.options).map(o => (o.textContent || '').trim()).filter(Boolean);
-            out.push({
-                id: sel.id,
-                selectedIndex: sel.selectedIndex,
-                selectedText: (selectedOpt ? selectedOpt.textContent : '').trim(),
-                value: sel.value,
-                optionCount: sel.options.length,
-                firstFiveOptions: allTexts.slice(0, 5),
-            });
-        }
-        return {
-            totalSelects: document.querySelectorAll('select').length,
-            leftOperands: out,
-        };
-    }"""
+    match = _match_left_operand_row(rows, needle, occurrence)
+    if match is None:
+        raise LookupError(
+            f"No Left Operand matched '{left_operand_text}' (occurrence "
+            f"{occurrence}). Available: {[r['value'] for r in rows]}"
+        )
 
-    # JS that searches across both selected option and any option.
-    # JDE uses non-breaking spaces ( ) inside option text, so we normalize
-    # them to regular spaces and collapse whitespace before substring-matching.
-    js_match = """(needle) => {
-        // Normalize: split on any whitespace (including U+00A0 NBSP),
-        // rejoin with single spaces, lowercase. Avoids any regex-escape pitfalls.
-        const norm = (s) => (s || '')
-            .split(/[\\s\\u00A0]+/)
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-
-        // Levenshtein distance — measures edit distance between two strings
-        const levenshtein = (a, b) => {
-            if (!a.length) return b.length;
-            if (!b.length) return a.length;
-            const m = []; for (let i = 0; i <= a.length; i++) m.push([i]);
-            for (let j = 1; j <= b.length; j++) m[0][j] = j;
-            for (let i = 1; i <= a.length; i++) {
-                for (let j = 1; j <= b.length; j++) {
-                    const cost = a[i-1] === b[j-1] ? 0 : 1;
-                    m[i][j] = Math.min(m[i-1][j]+1, m[i][j-1]+1, m[i-1][j-1]+cost);
-                }
-            }
-            return m[a.length][b.length];
-        };
-
-        // Compute similarity between target and the leading tokens of text
-        // (we only compare the same number of words as the target).
-        const fuzzyScore = (target, text) => {
-            const tWords = target.split(' ');
-            const xWords = text.split(' ').slice(0, tWords.length);
-            const tHead = tWords.join(' ');
-            const xHead = xWords.join(' ');
-            if (!tHead || !xHead) return 0;
-            const dist = levenshtein(tHead, xHead);
-            const maxLen = Math.max(tHead.length, xHead.length);
-            return 1 - dist / maxLen;
-        };
-
-        const FUZZY_THRESHOLD = 0.75;  // 75% similarity → accept
-
-        const target = norm(needle);
-        const selects = document.querySelectorAll("select[id^='LeftOperand']");
-        const tried = [];
-        const rowChecks = [];
-
-        // ── Strategy 1: match the SELECTED option of a LeftOperand dropdown.
-        //   Two passes to avoid the "Business Unit" vs "Business Unit - Header"
-        //   ambiguity — a shorter needle must NOT hijack a longer row that
-        //   merely contains it as a prefix.
-        //     Pass A (exact):   text === target
-        //     Pass B (substring): text.includes(target), prefer the SHORTEST hit
-        const selectedTexts = [];
-        for (const sel of selects) {
-            const opt = sel.options[sel.selectedIndex];
-            const text = norm(opt ? opt.textContent : '');
-            const score = fuzzyScore(target, text);
-            tried.push({ id: sel.id, normalized: text, includes: text.includes(target), score: score.toFixed(2) });
-            if (text) selectedTexts.push({ sel: sel, text: text });
-        }
-        for (const c of selectedTexts) {
-            if (c.text === target) {
-                const m = c.sel.id.match(/(\\d+)$/);
-                return { id: c.sel.id, n: m ? m[1] : null, strategy: "selected-exact", text: c.text, target: target, tried: tried };
-            }
-        }
-        const selectedSubstr = selectedTexts
-            .filter(c => c.text.includes(target))
-            .sort((a, b) => a.text.length - b.text.length);
-        if (selectedSubstr.length > 0) {
-            const c = selectedSubstr[0];
-            const m = c.sel.id.match(/(\\d+)$/);
-            return { id: c.sel.id, n: m ? m[1] : null, strategy: "selected-substr", text: c.text, target: target, tried: tried };
-        }
-
-        // ── Strategy 2: row-cell text match (handles LOCKED rows where the
-        //   field name is rendered as static <td> text and no LeftOperand{N}
-        //   select exists). We walk every #Select{N} checkbox, look at its
-        //   <tr>, and match the EFFECTIVE text of each <td>:
-        //     - <td> with a <select>: the selected option's text
-        //     - <td> with no <select>: its raw textContent
-        //   Two passes as above: exact-equality first, then shortest-substring.
-        const cellEffectiveText = (td) => {
-            const sels = td.querySelectorAll('select');
-            if (sels.length > 0) {
-                const parts = [];
-                for (const sel of sels) {
-                    const opt = sel.options[sel.selectedIndex];
-                    if (opt) parts.push(opt.textContent || '');
-                }
-                return norm(parts.join(' '));
-            }
-            return norm(td.textContent);
-        };
-        const rowCheckboxes = document.querySelectorAll(
-            "input[type='checkbox'][id^='Select']"
-        );
-        for (const cb of rowCheckboxes) {
-            const idMatch = cb.id.match(/^Select(\\d+)$/);
-            if (!idMatch) continue;
-            const n = idMatch[1];
-            const row = cb.closest('tr');
-            if (!row) continue;
-            const tds = Array.from(row.querySelectorAll('td'));
-            const cellTexts = tds.map(td => cellEffectiveText(td));
-            rowChecks.push({ n: n, cellTexts: cellTexts });
-        }
-        const dumpRowChecks = () => rowChecks.map(r => ({
-            n: r.n,
-            cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60)),
-        }));
-        // Pass A: exact cell equality
-        for (const r of rowChecks) {
-            const matchIdx = r.cellTexts.findIndex(t => t && t === target);
-            if (matchIdx !== -1) {
-                return {
-                    id: '#Select' + r.n, n: r.n,
-                    strategy: "row-cell-exact(td[" + matchIdx + "])",
-                    text: r.cellTexts[matchIdx], target: target,
-                    tried: tried, rowChecks: dumpRowChecks(),
-                };
-            }
-        }
-        // Pass B: substring cell match — prefer the shortest containing text
-        // so "Business Unit" doesn't swallow the "Business Unit - Header" row.
-        let bestSubstr = null;
-        for (const r of rowChecks) {
-            for (let i = 0; i < r.cellTexts.length; i++) {
-                const t = r.cellTexts[i];
-                if (t && t.includes(target)) {
-                    if (!bestSubstr || t.length < bestSubstr.text.length) {
-                        bestSubstr = { n: r.n, col: i, text: t };
-                    }
-                }
-            }
-        }
-        if (bestSubstr) {
-            return {
-                id: '#Select' + bestSubstr.n, n: bestSubstr.n,
-                strategy: "row-cell-substr(td[" + bestSubstr.col + "])",
-                text: bestSubstr.text, target: target,
-                tried: tried, rowChecks: dumpRowChecks(),
-            };
-        }
-
-        // Strategy 3: fuzzy match on row cells (handles typos in the Excel
-        // value — e.g. "Bussines Unit" vs "Business Unit" — and works for
-        // both locked and unlocked rows since we use the same cell-text
-        // extraction as Strategy 2). On score ties, prefer the shortest cell
-        // text so "Business Unit" wins over "Business Unit - Header".
-        let bestScore = 0;
-        let bestRowN = null;
-        let bestCol = null;
-        let bestText = null;
-        for (const r of rowChecks) {
-            for (let i = 0; i < r.cellTexts.length; i++) {
-                const text = r.cellTexts[i];
-                if (!text) continue;
-                const score = fuzzyScore(target, text);
-                const better = (score > bestScore) ||
-                    (score === bestScore && bestText != null && text.length < bestText.length);
-                if (better) {
-                    bestScore = score;
-                    bestRowN = r.n;
-                    bestCol = i;
-                    bestText = text;
-                }
-            }
-        }
-        if (bestRowN != null && bestScore >= FUZZY_THRESHOLD) {
-            return {
-                id: '#Select' + bestRowN,
-                n: bestRowN,
-                strategy: "fuzzy(" + bestScore.toFixed(2) + ", td[" + bestCol + "])",
-                text: bestText,
-                target: target,
-                tried: tried,
-                rowChecks: rowChecks.map(r => ({
-                    n: r.n,
-                    cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60))
-                })),
-            };
-        }
-
-        return {
-            id: null,
-            n: null,
-            strategy: "no-match",
-            target: target,
-            tried: tried,
-            bestScore: bestScore.toFixed(2),
-            rowChecks: rowChecks.map(r => ({
-                n: r.n,
-                cellTexts: r.cellTexts.map(t => (t || '').slice(0, 60))
-            })),
-        };
-    }"""
-
-    # Collect ALL pages in the browser context (main + popups + new tabs)
-    pages = list(page.context.pages)
-    print(f"  ↳ Browser context has {len(pages)} page(s)")
-    for i, p in enumerate(pages):
-        try:
-            print(f"      page[{i}] url={p.url[:100]!r}  title={(await p.title())[:60]!r}")
-        except Exception:
-            print(f"      page[{i}] (closed or inaccessible)")
-
-    # Walk every page → every frame
-    for page_idx, p in enumerate(pages):
-        try:
-            frames = p.frames
-        except Exception:
-            print(f"  ↳ page[{page_idx}] inaccessible, skipping")
-            continue
-
-        for frame in frames:
-            frame_label = frame.name or frame.url[:60] or "main"
-            try:
-                inspection = await frame.evaluate(js_inspect)
-            except Exception as exc:
-                print(f"  ↳ page[{page_idx}] frame [{frame_label}]: cannot evaluate ({exc})")
-                continue
-
-            total = inspection.get("totalSelects", 0)
-            left_ops = inspection.get("leftOperands", [])
-
-            if total == 0:
-                # Empty frame, don't clutter the log
-                continue
-
-            print(f"  ↳ page[{page_idx}] frame [{frame_label}]: total <select>={total}, LeftOperand*={len(left_ops)}")
-            for d in left_ops:
-                print(
-                    f"      {d['id']}: selectedIndex={d['selectedIndex']} "
-                    f"value={d.get('value')!r} optionCount={d['optionCount']} "
-                    f"selectedText={d['selectedText']!r}"
-                )
-                if d.get("firstFiveOptions"):
-                    print(f"        first options: {d['firstFiveOptions']}")
-
-            if not left_ops:
-                continue
-
-            # Try to match
-            try:
-                match = await frame.evaluate(js_match, left_operand_text)
-            except Exception as exc:
-                print(f"  ↳ js_match failed: {exc}")
-                match = None
-
-            if match and match.get("n"):
-                n = match["n"]
-                selector = f"#RightOperand{n}"
-                print(
-                    f"  ↳ MATCH: page[{page_idx}] frame [{frame_label}] {match['id']} "
-                    f"via {match['strategy']} (text: {match['text']!r}) → {selector}"
-                )
-                return selector
-
-            # Match failed in this frame — dump the normalized comparison
-            # plus the per-row cell texts so we can see why no row matched.
-            if match and match.get("strategy") == "no-match":
-                print(
-                    f"  ↳ No match in this frame. Normalized target: {match.get('target')!r} "
-                    f"(best fuzzy score: {match.get('bestScore')})"
-                )
-                for t in match.get("tried", []):
-                    print(
-                        f"      [LeftOperand] {t['id']}: includes={t['includes']} "
-                        f"score={t.get('score')} normalized={t['normalized']!r}"
-                    )
-                for r in match.get("rowChecks", []):
-                    print(
-                        f"      [Row Select{r['n']}] cells={r['cellTexts']}"
-                    )
-
-    raise LookupError(
-        f"No LeftOperand* dropdown matched '{left_operand_text}'. "
-        f"Check the console output above to see which pages/frames were inspected."
+    selector = f"#RightOperand{match['n']}"
+    print(
+        f"  ↳ MATCH occurrence #{occurrence}: row {match['n']} "
+        f"(value={match['value']!r}, locked={match['locked']}) → {selector}"
     )
+    return selector
 
 
 async def is_data_selection_row_locked(page: Page, row_number) -> bool:
