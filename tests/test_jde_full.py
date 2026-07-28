@@ -865,11 +865,13 @@ MULTI_VALUE_LEFT_OPERANDS: set[str] = {
 
 
 def _split_multi_values(raw: str) -> list[str]:
-    """Split a semicolon-separated Excel value into a de-duplicated ordered list."""
+    """Split a comma/semicolon-separated Excel value into a de-duplicated,
+    ordered list. Excel may use ',' or ';' (e.g. '10101, 10450, 10502' or
+    'SA; SF; SM'); surrounding quotes on each value are stripped."""
     seen: set[str] = set()
     out: list[str] = []
-    for chunk in str(raw or "").split(";"):
-        v = chunk.strip()
+    for chunk in re.split(r"[;,]", str(raw or "")):
+        v = chunk.strip().strip("'\"").strip()
         if not v or v in seen:
             continue
         seen.add(v)
@@ -1252,10 +1254,12 @@ async def read_locked_right_operand_text(
 
 def _tokenize_multi_value(raw: str) -> set[str]:
     """Split a comma/semicolon list into a normalized set for order-insensitive
-    comparison (used for multi-value Left Operands like Order Type)."""
+    comparison (used for multi-value Left Operands like Order Type). Surrounding
+    quotes on the value or individual tokens are stripped so a JDE value like
+    '"10101,10450,10502"' matches the Excel '10101, 10450, 10502'."""
     tokens: set[str] = set()
     for chunk in str(raw or "").replace(";", ",").split(","):
-        v = chunk.strip().lower()
+        v = chunk.strip().strip("'\"").strip().lower()
         if v:
             tokens.add(v)
     return tokens
@@ -1270,6 +1274,15 @@ def _collapse_ws(s: str) -> str:
     """Remove all whitespace so spacing never affects a scalar/range compare
     (e.g. '569  -  620' → '569-620')."""
     return "".join(str(s or "").split())
+
+
+def _strip_edge_quotes(s: str) -> str:
+    """Strip the single/double quotes JDE sometimes wraps a literal in
+    (e.g. '"10101,10450,10502"' → '10101,10450,10502')."""
+    s = str(s or "").strip()
+    while len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1].strip()
+    return s
 
 
 def right_operand_matches_excel(
@@ -1288,8 +1301,8 @@ def right_operand_matches_excel(
     """
     if current is None:
         return False
-    cur = current.strip()
-    exp = str(excel_value or "").strip()
+    cur = _strip_edge_quotes(current)
+    exp = _strip_edge_quotes(excel_value)
     if not cur or not exp:
         return False
     if cur.lower() in _RIGHT_OPERAND_SENTINELS and exp.lower() not in _RIGHT_OPERAND_SENTINELS:
