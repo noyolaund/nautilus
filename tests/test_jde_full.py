@@ -105,7 +105,102 @@ def resolve_comparison(raw: str) -> str:
 # Login flow (used when running standalone)
 # ---------------------------------------------------------------------------
 
-async def find_right_operand_selector(page: Page, left_operand_text: str) -> str:
+# Resolve the occurrence-th data-selection row for a duplicated Left Operand
+# (e.g. two "Order Company" rows), in document (top-to-bottom) order, so the
+# Nth Excel entry maps to the Nth JDE row. Works for locked and unlocked rows
+# via the same effective cell-text extraction as find_right_operand_selector's
+# Strategy 2. Each row's Left Operand text is the SHORTEST cell whose text
+# contains the target; the duplicate group is the rows sharing that shortest
+# text — which avoids matching comparison/right-operand cells and stops a
+# shorter needle from hijacking a longer row ("Business Unit" vs "... Header").
+_JS_FIND_NTH_DUPLICATE_ROW = """({ needle, occurrence }) => {
+    const norm = (s) => (s || '')
+        .split(/[\\s\\u00A0]+/).filter(Boolean).join(' ').toLowerCase();
+    const target = norm(needle);
+    const occ = Math.max(1, occurrence | 0);
+    if (!target) return { count: 0, n: null, all: [] };
+    const cellText = (td) => {
+        const sels = td.querySelectorAll('select');
+        if (sels.length) {
+            const parts = [];
+            for (const s of sels) {
+                const o = s.options[s.selectedIndex];
+                if (o) parts.push(o.textContent || '');
+            }
+            return norm(parts.join(' '));
+        }
+        return norm(td.textContent);
+    };
+    const rows = [];  // { n, text } in DOM order
+    const boxes = document.querySelectorAll("input[type='checkbox'][id^='Select']");
+    for (const cb of boxes) {
+        const m = cb.id.match(/^Select(\\d+)$/);
+        if (!m) continue;
+        const tr = cb.closest('tr');
+        if (!tr) continue;
+        let best = null;
+        for (const td of tr.querySelectorAll('td')) {
+            const t = cellText(td);
+            if (t && t.includes(target) && (best === null || t.length < best.length)) best = t;
+        }
+        if (best !== null) rows.push({ n: m[1], text: best });
+    }
+    if (!rows.length) return { count: 0, n: null, all: [] };
+    let minLen = Infinity, shortest = '';
+    for (const r of rows) if (r.text.length < minLen) { minLen = r.text.length; shortest = r.text; }
+    const group = rows.filter(r => r.text === shortest);
+    return {
+        count: group.length,
+        n: (group.length >= occ ? group[occ - 1].n : null),
+        all: group.map(r => r.n),
+        groupText: shortest,
+    };
+}"""
+
+
+async def _find_nth_duplicate_right_operand(
+    page: Page, left_operand_text: str, occurrence: int,
+) -> str:
+    """Return '#RightOperand{N}' for the *occurrence*-th row whose Left Operand
+    exactly matches *left_operand_text* (document order). Raises LookupError if
+    there are fewer than *occurrence* such rows."""
+    for p in list(page.context.pages):
+        try:
+            frames = p.frames
+        except Exception:
+            continue
+        for frame in frames:
+            try:
+                res = await frame.evaluate(
+                    _JS_FIND_NTH_DUPLICATE_ROW,
+                    {"needle": left_operand_text, "occurrence": occurrence},
+                )
+            except Exception:
+                continue
+            if not res:
+                continue
+            count = res.get("count", 0)
+            if count and res.get("n"):
+                selector = f"#RightOperand{res['n']}"
+                print(
+                    f"  ↳ MATCH occurrence #{occurrence} of {left_operand_text!r}: "
+                    f"{selector} (of {count} matching row(s): {res.get('all')})"
+                )
+                return selector
+            if count:
+                print(
+                    f"  ↳ Found {count} {left_operand_text!r} row(s) but need "
+                    f"occurrence #{occurrence}"
+                )
+    raise LookupError(
+        f"Occurrence #{occurrence} of Left Operand '{left_operand_text}' not found "
+        f"(fewer than {occurrence} matching rows in JDE)"
+    )
+
+
+async def find_right_operand_selector(
+    page: Page, left_operand_text: str, occurrence: int = 1,
+) -> str:
     """Find the data-selection row whose Left Operand matches *left_operand_text*
     and return the matching '#RightOperand{N}' selector.
 
@@ -120,17 +215,29 @@ async def find_right_operand_selector(page: Page, left_operand_text: str) -> str
     holds the same 54 field-name options, so it would always match the first
     dropdown — producing wrong row numbers.
 
+    *occurrence* (1-based) selects among duplicated Left Operands: occurrence
+    2+ resolves the Nth exact-match row in document order (see
+    _find_nth_duplicate_right_operand).
+
     Raises LookupError if nothing matches.
     """
     if not left_operand_text:
         raise LookupError("Empty left_operand value — cannot determine RightOperand selector")
 
     needle = left_operand_text.strip().lower()
-    print(f"  ↳ Searching for left operand: {left_operand_text!r} (needle={needle!r})")
+    print(
+        f"  ↳ Searching for left operand: {left_operand_text!r} "
+        f"(needle={needle!r}, occurrence={occurrence})"
+    )
 
     # Wait for the Data Selection dialog to finish rendering on the current page
     print(f"  ↳ Waiting for Data Selection dialog to render...")
     await asyncio.sleep(5)
+
+    # Duplicated Left Operands: resolve the Nth matching row directly so the
+    # Nth Excel entry maps to the Nth JDE row.
+    if occurrence > 1:
+        return await _find_nth_duplicate_right_operand(page, left_operand_text, occurrence)
 
     # JS that returns a diagnostic dump of every LeftOperand* in a frame
     js_inspect = """() => {
@@ -1661,13 +1768,21 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 # write_literal_by_active_tab), not from the Left Operand name.
                 behavior = sel.get("behavior", "literal")
 
+                # Nth Excel entry of a Left Operand → Nth JDE row with that
+                # name (handles duplicates like two "Order Company" rows). The
+                # ordinal is computed at parse time so blank cells in other
+                # report columns don't shift it.
+                occurrence = int(sel.get("occurrence", 1) or 1)
+
                 # Find the matching RightOperand row by scanning all
                 # LeftOperand dropdowns for one whose option text contains
                 # the user's left_operand value. If nothing matches, the
                 # operand isn't in JDE yet: "remove" has nothing to delete;
                 # otherwise add a brand-new row with the right combo option.
                 try:
-                    right_operand_sel = await find_right_operand_selector(page, left_operand)
+                    right_operand_sel = await find_right_operand_selector(
+                        page, left_operand, occurrence=occurrence,
+                    )
                 except LookupError as exc:
                     if behavior == "remove":
                         print(

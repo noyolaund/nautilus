@@ -213,6 +213,10 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         ds_rows: list[dict] = []
         po_rows: list[dict] = []
         in_po_section = False
+        # Ordinal of each Left Operand among duplicates (by row order), so the
+        # Nth "Order Company" row maps to the Nth JDE row regardless of which
+        # report columns leave it blank.
+        lo_occurrence: dict[str, int] = {}
         for row_index, row in enumerate(
             ws.iter_rows(min_row=JDE_DATA_START_ROW, values_only=True),
             start=JDE_DATA_START_ROW,
@@ -237,11 +241,15 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "option_label": col_b,
                 })
             else:
+                left_operand = _clean_left_operand(a_str)
+                lo_key = left_operand.lower()
+                lo_occurrence[lo_key] = lo_occurrence.get(lo_key, 0) + 1
                 ds_rows.append({
                     "row_index": row_index,
                     "row": row,
-                    "left_operand": _clean_left_operand(a_str),
+                    "left_operand": left_operand,
                     "comparison": col_b,
+                    "occurrence": lo_occurrence[lo_key],
                 })
 
         # Determine how many report columns we have (columns C..N).
@@ -307,6 +315,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "comparison": r["comparison"],
                     "data_new": data_new,
                     "behavior": classify_ds_behavior(data_new),
+                    "occurrence": r["occurrence"],
                     "_source_row": r["row_index"],
                 })
 
