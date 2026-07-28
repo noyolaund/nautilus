@@ -1188,6 +1188,68 @@ async def read_right_operand_selected_text(
     return None
 
 
+async def read_locked_right_operand_text(
+    page: Page, row_number: str,
+) -> Optional[str]:
+    """Return the current Right Operand value of a LOCKED Data Selection row.
+
+    Locked rows render no #RightOperand{N} select — the value is static text.
+    In #jdeGrid the columns are Operator (1), Left Operand (2), Comparison (3),
+    Right Operand (4), so we read the Right Operand column's StaticText span.
+    The column index is detected from an unlocked row's #RightOperand select
+    (or #LeftOperand + 2), falling back to the 4th StaticText span in the row.
+
+    Returns None if the row can't be found in any frame.
+    """
+    js = """(n) => {
+        const norm = (s) => (s || '').split(/[\\s\\u00A0]+/).filter(Boolean).join(' ');
+        const cb = document.querySelector('#Select' + n);
+        if (!cb) return null;
+        const tr = cb.closest('tr');
+        if (!tr) return null;
+
+        // Detect the Right Operand column index across the grid.
+        const scope = document.querySelector('#jdeGrid') || document;
+        let rightCol = -1;
+        const ro = scope.querySelector("select[id^='RightOperand']");
+        if (ro) {
+            const td = ro.closest('td');
+            if (td) rightCol = Array.prototype.indexOf.call(td.parentElement.children, td);
+        }
+        if (rightCol < 0) {
+            const lo = scope.querySelector("select[id^='LeftOperand']");
+            if (lo) {
+                const td = lo.closest('td');
+                if (td) rightCol = Array.prototype.indexOf.call(td.parentElement.children, td) + 2;
+            }
+        }
+
+        let value = null, via = '';
+        if (rightCol >= 0 && tr.children[rightCol]) {
+            const cell = tr.children[rightCol];
+            const span = cell.querySelector('span.StaticText, .StaticText');
+            value = (span ? span.textContent : cell.textContent) || '';
+            via = 'grid-col';
+        } else {
+            const st = tr.querySelectorAll('span.StaticText, .StaticText');
+            if (st.length >= 4) { value = st[3].textContent || ''; via = 'static-4th'; }
+        }
+        return value === null ? null : { value: norm(value), via: via };
+    }"""
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js, str(row_number))
+        except Exception:
+            continue
+        if result:
+            print(
+                f"      🔒 locked row {row_number} Right Operand "
+                f"(via {result.get('via')}): {result.get('value')!r}"
+            )
+            return result.get("value") or ""
+    return None
+
+
 def _tokenize_multi_value(raw: str) -> set[str]:
     """Split a comma/semicolon list into a normalized set for order-insensitive
     comparison (used for multi-value Left Operands like Order Type)."""
@@ -1562,11 +1624,16 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 if row_number:
                     row_is_locked = await is_data_selection_row_locked(page, row_number)
 
-                # Pre-edit check: read #RightOperand{N} and skip when the row
-                # is already in the desired state — no unlock / edit / re-lock
-                # churn needed. "remove" always goes through.
+                # Pre-edit check: read the current Right Operand value and skip
+                # when the row is already in the desired state — no unlock /
+                # edit / re-lock churn needed. "remove" always goes through.
+                # Locked rows have no #RightOperand{N} select, so their value
+                # is read from the column-4 StaticText instead.
                 if behavior != "remove" and row_number:
-                    current_right = await read_right_operand_selected_text(page, row_number)
+                    if row_is_locked:
+                        current_right = await read_locked_right_operand_text(page, row_number)
+                    else:
+                        current_right = await read_right_operand_selected_text(page, row_number)
                     if behavior in ("zero", "null"):
                         if (current_right or "").strip().lower() == behavior:
                             print(
