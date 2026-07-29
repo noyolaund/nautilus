@@ -475,6 +475,9 @@ async def lock_data_selection_row(runner: StepRunner, row_number) -> None:
         "Advanced OK button",
         selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
     )
+    # The Advanced OK reloads the grid frame; give it time to re-render before
+    # the next field touches #Select{N} (otherwise the selector isn't found yet).
+    await asyncio.sleep(0.5)
 
 
 async def find_processing_option_tab(page: Page, tab_name: str) -> Optional[str]:
