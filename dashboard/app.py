@@ -152,10 +152,18 @@ def _clean_left_operand(raw: str) -> str:
 
 
 def classify_ds_behavior(value: str) -> str:
-    """Classify an extracted Data Selection value into an edit behavior."""
+    """Classify an extracted Data Selection value into an edit behavior.
+
+    The team wraps the sentinel keywords in angle brackets in the new Excel
+    template (``<Zero>``, ``<Null>``); a single surrounding ``<...>`` pair is
+    stripped before matching, so both the new bracketed form and the legacy
+    bare form (``Zero``/``Null``) classify identically.
+    """
     v = str(value or "").strip()
-    low = v.lower()
-    if v.upper() == "REMOVE" or low == "blank":
+    # Strip one surrounding pair of angle brackets: "<Zero>" -> "Zero".
+    token = re.sub(r"^<\s*(.+?)\s*>$", r"\1", v).strip()
+    low = token.lower()
+    if token.upper() == "REMOVE" or low == "blank":
         return "remove"
     if low == "zero":
         return "zero"
