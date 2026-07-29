@@ -50,6 +50,17 @@ def _run_screenshot_path(name: str) -> str:
     return str(base / f"{safe}.png")
 
 
+async def _diagnostic_screenshot(page, name: str) -> None:
+    """Capture a full-page screenshot into the run's screenshots folder.
+
+    Best-effort and taken ONLY when an error or warning occurs — the success
+    path takes no screenshots, which noticeably cuts execution time."""
+    try:
+        await page.screenshot(path=_run_screenshot_path(name), full_page=True)
+    except Exception:
+        pass
+
+
 # Translate Excel comparison operators (Row 5+, Column B) into the visible
 # text used by JDE's Comparison dropdown ("is equal to", "is not equal to", ...).
 # Keys are lower-cased; unknown values fall through unchanged.
@@ -888,7 +899,6 @@ async def login(runner: StepRunner) -> None:
     await runner.type("the Password field", value=PASSWORD, sensitive=True)
     await runner.click("the Sign In button")
     await runner.assert_visible("Welcome!")
-    await runner.screenshot()
 
 
 # Left-operand names that use JDE's multi-value literal editor
@@ -1443,7 +1453,6 @@ async def add_data_selection_row(
     # "Zero" / "Null" need no value — selecting the option is the whole edit.
     if right_operand == "Literal":
         await write_literal_by_active_tab(page, runner, str(value))
-    await runner.screenshot()
 
 
 # ---------------------------------------------------------------------------
@@ -1579,231 +1588,258 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
 
         # ── Data Selection — loop once per entry ────────────────────────
         if data_selections:
-            print(f"[{label}] Configuring {len(data_selections)} data selection(s)")
-            await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
-            await runner.click("Data Selection option", selector="#HE0_127", iframe=IFRAME, selector_strategy="css")
+            try:
+                print(f"[{label}] Configuring {len(data_selections)} data selection(s)")
+                await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
+                await runner.click("Data Selection option", selector="#HE0_127", iframe=IFRAME, selector_strategy="css")
 
-            # Enumerate the Left Operand column ONCE for the whole dialog (the
-            # grid doesn't change on a value edit — only when a row is added or
-            # removed, after which lo_rows is refreshed). Reused for every field
-            # so duplicated Left Operands map their Nth entry to the Nth row.
-            print(f"[{label}] Enumerating Left Operand column (one-time)...")
-            lo_rows, _ = await list_left_operands(page, settle_ms=5000)
+                # Enumerate the Left Operand column ONCE for the whole dialog (the
+                # grid doesn't change on a value edit — only when a row is added or
+                # removed, after which lo_rows is refreshed). Reused for every field
+                # so duplicated Left Operands map their Nth entry to the Nth row.
+                print(f"[{label}] Enumerating Left Operand column (one-time)...")
+                lo_rows, _ = await list_left_operands(page, settle_ms=5000)
 
-            for idx, sel in enumerate(data_selections, 1):
-                left_operand = sel.get("left_operand", "")
-                data_value = sel.get("data_new", "")
-                comparison_value = sel.get("comparison", "")
-                print(
-                    f"[{label}]   DS {idx}: {left_operand} {comparison_value or '='} {data_value}"
-                )
-
-                # Skip blank Excel cells — they mean "no override for this
-                # Left Operand in this report column".
-                if not str(data_value).strip():
-                    print(f"[{label}]   ↳ empty value, skipping")
-                    continue
-
-                # Constant values map to distinct behaviors (attached at parse
-                # time): "remove" (REMOVE / Blank) deletes the row; "zero" /
-                # "null" select that option in the Right Operand combo box;
-                # everything else is a "literal". The literal's data type is
-                # verified at write time against JDE's active tab (see
-                # write_literal_by_active_tab), not from the Left Operand name.
-                behavior = sel.get("behavior", "literal")
-
-                # Nth Excel entry of a Left Operand → Nth JDE row with that
-                # name (handles duplicates like two "Order Company" rows). The
-                # ordinal is computed at parse time so blank cells in other
-                # report columns don't shift it.
-                occurrence = int(sel.get("occurrence", 1) or 1)
-
-                # Find the matching RightOperand row by scanning all
-                # LeftOperand dropdowns for one whose option text contains
-                # the user's left_operand value. If nothing matches, the
-                # operand isn't in JDE yet: "remove" has nothing to delete;
-                # otherwise add a brand-new row with the right combo option.
-                try:
-                    right_operand_sel = await find_right_operand_selector(
-                        page, left_operand, occurrence=occurrence, rows=lo_rows,
+                for idx, sel in enumerate(data_selections, 1):
+                    left_operand = sel.get("left_operand", "")
+                    data_value = sel.get("data_new", "")
+                    comparison_value = sel.get("comparison", "")
+                    print(
+                        f"[{label}]   DS {idx}: {left_operand} {comparison_value or '='} {data_value}"
                     )
-                except LookupError as exc:
-                    if behavior == "remove":
-                        print(
-                            f"[{label}]   ↳ {left_operand!r} not present — "
-                            f"nothing to remove, skipping"
-                        )
+
+                    # Skip blank Excel cells — they mean "no override for this
+                    # Left Operand in this report column".
+                    if not str(data_value).strip():
+                        print(f"[{label}]   ↳ empty value, skipping")
                         continue
-                    print(f"[{label}]   ↳ {exc} — adding as a new row")
+
+                    # Constant values map to distinct behaviors (attached at parse
+                    # time): "remove" (REMOVE / Blank) deletes the row; "zero" /
+                    # "null" select that option in the Right Operand combo box;
+                    # everything else is a "literal". The literal's data type is
+                    # verified at write time against JDE's active tab (see
+                    # write_literal_by_active_tab), not from the Left Operand name.
+                    behavior = sel.get("behavior", "literal")
+
+                    # Nth Excel entry of a Left Operand → Nth JDE row with that
+                    # name (handles duplicates like two "Order Company" rows). The
+                    # ordinal is computed at parse time so blank cells in other
+                    # report columns don't shift it.
+                    occurrence = int(sel.get("occurrence", 1) or 1)
+
+                    # Find the matching RightOperand row by scanning all
+                    # LeftOperand dropdowns for one whose option text contains
+                    # the user's left_operand value. If nothing matches, the
+                    # operand isn't in JDE yet: "remove" has nothing to delete;
+                    # otherwise add a brand-new row with the right combo option.
                     try:
-                        await add_data_selection_row(
-                            page, runner, left_operand, comparison_value, data_value,
-                            right_operand=_RIGHT_OPERAND_OPTION.get(behavior, "Literal"),
+                        right_operand_sel = await find_right_operand_selector(
+                            page, left_operand, occurrence=occurrence, rows=lo_rows,
                         )
-                        # A new row changed the grid — refresh the cache.
+                    except LookupError as exc:
+                        if behavior == "remove":
+                            print(
+                                f"[{label}]   ↳ {left_operand!r} not present — "
+                                f"nothing to remove, skipping"
+                            )
+                            continue
+                        print(f"[{label}]   ↳ {exc} — adding as a new row")
+                        try:
+                            await add_data_selection_row(
+                                page, runner, left_operand, comparison_value, data_value,
+                                right_operand=_RIGHT_OPERAND_OPTION.get(behavior, "Literal"),
+                            )
+                            # A new row changed the grid — refresh the cache.
+                            lo_rows, _ = await list_left_operands(page, settle_ms=1000)
+                        except LiteralTypeMismatch as tmerr:
+                            # Wrong data type for the field — leave it unset,
+                            # record the error, and keep going.
+                            msg = f"{left_operand}: {tmerr}"
+                            print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
+                            runner.record_failure(f"Data Selection: {left_operand}", str(tmerr))
+                            field_errors.append(msg)
+                            await _diagnostic_screenshot(
+                                page, f"jde_ds_typemismatch_{report.get('app_report', 'unknown')}_{idx}"
+                            )
+                        except LiteralTabNotDetected as tnderr:
+                            # Active tab undetected — warn and keep going.
+                            msg = f"{left_operand}: {tnderr}"
+                            print(f"[{label}]   ↳ ⚠ {msg} — leaving field unchanged")
+                            runner.record_warning(f"Data Selection: {left_operand}", str(tnderr))
+                            field_warnings.append(msg)
+                            await _diagnostic_screenshot(
+                                page, f"jde_ds_tabundetected_{report.get('app_report', 'unknown')}_{idx}"
+                            )
+                        except Exception as add_exc:
+                            # Couldn't add the row (e.g. the operand isn't in JDE
+                            # and the add flow failed). Bubble to the Data Selection
+                            # handler, which records it and still runs Processing
+                            # Options.
+                            raise StepError("Add Data Selection row", str(add_exc), None)
+                        continue
+
+                    # Extract the row number from right_operand_sel ("#RightOperand4" → "4")
+                    # — same number is used for #Select{N} when removing the row.
+                    import re as _re
+                    _row_match = _re.search(r"(\d+)$", right_operand_sel)
+                    row_number = _row_match.group(1) if _row_match else None
+
+                    # Detect whether this row is locked. If so, we open the
+                    # Advanced dialog and toggle the Locked checkbox off before
+                    # editing, then toggle it back on after (unless we deleted
+                    # the row, in which case there's nothing to re-lock).
+                    row_is_locked = False
+                    if row_number:
+                        row_is_locked = await is_data_selection_row_locked(page, row_number)
+
+                    # Pre-edit check: read the current Right Operand value and skip
+                    # when the row is already in the desired state — no unlock /
+                    # edit / re-lock churn needed. "remove" always goes through.
+                    # Locked rows have no #RightOperand{N} select, so their value
+                    # is read from the column-4 StaticText instead.
+                    if behavior != "remove" and row_number:
+                        if row_is_locked:
+                            current_right = await read_locked_right_operand_text(page, row_number)
+                        else:
+                            current_right = await read_right_operand_selected_text(page, row_number)
+                        if behavior in ("zero", "null"):
+                            if (current_right or "").strip().lower() == behavior:
+                                print(
+                                    f"[{label}]   ↳ Right Operand already "
+                                    f"{_RIGHT_OPERAND_OPTION[behavior]!r} — skipping"
+                                )
+                                continue
+                            print(
+                                f"[{label}]   ↳ setting Right Operand to "
+                                f"{_RIGHT_OPERAND_OPTION[behavior]!r}"
+                            )
+                        else:  # literal
+                            is_multi = left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS
+                            if right_operand_matches_excel(current_right, data_value, is_multi):
+                                print(
+                                    f"[{label}]   ↳ current value {current_right!r} already "
+                                    f"matches Excel {data_value!r} — skipping"
+                                )
+                                continue
+                            print(
+                                f"[{label}]   ↳ current JDE value {current_right!r} differs "
+                                f"from Excel {data_value!r} — will edit"
+                            )
+
+                    # Unlock if needed so the next steps can mutate the row.
+                    if row_is_locked and row_number:
+                        await unlock_data_selection_row(runner, row_number)
+
+                    # ── REMOVE branch (REMOVE / Blank) ───────────────────────
+                    # Mark the matching row's checkbox and click Delete instead of
+                    # setting a value. The row is gone after this, so no re-lock.
+                    if behavior == "remove":
+                        if not row_number:
+                            raise StepError(
+                                "REMOVE data selection",
+                                f"Could not extract row number from {right_operand_sel!r}",
+                                None,
+                            )
+                        select_checkbox = f"#Select{row_number}"
+                        print(
+                            f"[{label}]   ↳ remove mode: checking {select_checkbox} "
+                            f"then clicking #hc952 (Delete)"
+                        )
+                        await runner.click(
+                            f"Select{row_number} checkbox",
+                            selector=select_checkbox, iframe=IFRAME, selector_strategy="css",
+                        )
+                        await runner.click(
+                            "Delete button",
+                            selector="#hc952", iframe=IFRAME, selector_strategy="css",
+                        )
+                        # A deleted row changed the grid — refresh the cache.
                         lo_rows, _ = await list_left_operands(page, settle_ms=1000)
+                        continue
+
+                    # ── Zero / Null branch ───────────────────────────────────
+                    # These are plain Right Operand combo options — no Literal
+                    # editor, no value to type.
+                    if behavior in ("zero", "null"):
+                        await runner.select(
+                            "Right Operand dropdown",
+                            value=_RIGHT_OPERAND_OPTION[behavior],
+                            selector=right_operand_sel, iframe=IFRAME, selector_strategy="css",
+                        )
+                        if row_is_locked and row_number:
+                            await lock_data_selection_row(runner, row_number)
+                        continue
+
+                    # ── Default branch — add/update a Literal condition ──────
+                    # Pick "Literal" from the matching right operand dropdown;
+                    # the write dispatch below uses the active tab in the Literal
+                    # editor to pick the right control(s): Single Value → #LITtf,
+                    # Range of Values → #LITtfFrom/#LITtfTo, List of Values →
+                    # #LITtfList (multi-value reconciliation).
+                    await runner.select(
+                        "Right Operand dropdown",
+                        value="Literal",
+                        selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
+                    )
+                    try:
+                        await write_literal_by_active_tab(page, runner, str(data_value))
                     except LiteralTypeMismatch as tmerr:
-                        # Wrong data type for the field — leave it unset,
-                        # record the error, and keep going.
+                        # The value's data type doesn't fit the active tab. Leave
+                        # the field unchanged (the literal was never committed),
+                        # record the error, and continue with the next field.
                         msg = f"{left_operand}: {tmerr}"
                         print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
                         runner.record_failure(f"Data Selection: {left_operand}", str(tmerr))
                         field_errors.append(msg)
+                        await _diagnostic_screenshot(
+                            page, f"jde_ds_typemismatch_{report.get('app_report', 'unknown')}_{idx}"
+                        )
+                        if row_is_locked and row_number:
+                            await lock_data_selection_row(runner, row_number)
+                        continue
                     except LiteralTabNotDetected as tnderr:
-                        # Active tab undetected — warn and keep going.
+                        # Active tab couldn't be detected — we can't tell the
+                        # required data type. Record a warning, leave the field
+                        # unchanged, and continue with the remaining fields.
                         msg = f"{left_operand}: {tnderr}"
-                        print(f"[{label}]   ↳ ⚠ {msg} — leaving field unchanged")
+                        print(f"[{label}]   ↳ ⚠ {msg} — leaving field unchanged (warning)")
                         runner.record_warning(f"Data Selection: {left_operand}", str(tnderr))
                         field_warnings.append(msg)
-                    except Exception as add_exc:
-                        print(f"[{label}] ✖ Could not add new DS row: {add_exc}")
-                        await page.screenshot(
-                            path=_run_screenshot_path(
-                                f"jde_add_row_fail_{report.get('app_report', 'unknown')}_{idx}"
-                            ),
-                            full_page=True,
+                        await _diagnostic_screenshot(
+                            page, f"jde_ds_tabundetected_{report.get('app_report', 'unknown')}_{idx}"
                         )
-                        return {"status": "fail", "error": str(add_exc), "report": report}
-                    continue
+                        if row_is_locked and row_number:
+                            await lock_data_selection_row(runner, row_number)
+                        continue
 
-                # Extract the row number from right_operand_sel ("#RightOperand4" → "4")
-                # — same number is used for #Select{N} when removing the row.
-                import re as _re
-                _row_match = _re.search(r"(\d+)$", right_operand_sel)
-                row_number = _row_match.group(1) if _row_match else None
-
-                # Detect whether this row is locked. If so, we open the
-                # Advanced dialog and toggle the Locked checkbox off before
-                # editing, then toggle it back on after (unless we deleted
-                # the row, in which case there's nothing to re-lock).
-                row_is_locked = False
-                if row_number:
-                    row_is_locked = await is_data_selection_row_locked(page, row_number)
-
-                # Pre-edit check: read the current Right Operand value and skip
-                # when the row is already in the desired state — no unlock /
-                # edit / re-lock churn needed. "remove" always goes through.
-                # Locked rows have no #RightOperand{N} select, so their value
-                # is read from the column-4 StaticText instead.
-                if behavior != "remove" and row_number:
-                    if row_is_locked:
-                        current_right = await read_locked_right_operand_text(page, row_number)
-                    else:
-                        current_right = await read_right_operand_selected_text(page, row_number)
-                    if behavior in ("zero", "null"):
-                        if (current_right or "").strip().lower() == behavior:
-                            print(
-                                f"[{label}]   ↳ Right Operand already "
-                                f"{_RIGHT_OPERAND_OPTION[behavior]!r} — skipping"
-                            )
-                            continue
-                        print(
-                            f"[{label}]   ↳ setting Right Operand to "
-                            f"{_RIGHT_OPERAND_OPTION[behavior]!r}"
-                        )
-                    else:  # literal
-                        is_multi = left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS
-                        if right_operand_matches_excel(current_right, data_value, is_multi):
-                            print(
-                                f"[{label}]   ↳ current value {current_right!r} already "
-                                f"matches Excel {data_value!r} — skipping"
-                            )
-                            continue
-                        print(
-                            f"[{label}]   ↳ current JDE value {current_right!r} differs "
-                            f"from Excel {data_value!r} — will edit"
-                        )
-
-                # Unlock if needed so the next steps can mutate the row.
-                if row_is_locked and row_number:
-                    await unlock_data_selection_row(runner, row_number)
-
-                # ── REMOVE branch (REMOVE / Blank) ───────────────────────
-                # Mark the matching row's checkbox and click Delete instead of
-                # setting a value. The row is gone after this, so no re-lock.
-                if behavior == "remove":
-                    if not row_number:
-                        raise StepError(
-                            "REMOVE data selection",
-                            f"Could not extract row number from {right_operand_sel!r}",
-                            None,
-                        )
-                    select_checkbox = f"#Select{row_number}"
-                    print(
-                        f"[{label}]   ↳ remove mode: checking {select_checkbox} "
-                        f"then clicking #hc952 (Delete)"
-                    )
-                    await runner.click(
-                        f"Select{row_number} checkbox",
-                        selector=select_checkbox, iframe=IFRAME, selector_strategy="css",
-                    )
-                    await runner.click(
-                        "Delete button",
-                        selector="#hc952", iframe=IFRAME, selector_strategy="css",
-                    )
-                    await runner.screenshot()
-                    # A deleted row changed the grid — refresh the cache.
-                    lo_rows, _ = await list_left_operands(page, settle_ms=1000)
-                    continue
-
-                # ── Zero / Null branch ───────────────────────────────────
-                # These are plain Right Operand combo options — no Literal
-                # editor, no value to type.
-                if behavior in ("zero", "null"):
-                    await runner.select(
-                        "Right Operand dropdown",
-                        value=_RIGHT_OPERAND_OPTION[behavior],
-                        selector=right_operand_sel, iframe=IFRAME, selector_strategy="css",
-                    )
-                    await runner.screenshot()
+                    # Restore the lock state — only for the edit branch.
+                    # (REMOVE already `continue`d above.)
                     if row_is_locked and row_number:
                         await lock_data_selection_row(runner, row_number)
-                    continue
 
-                # ── Default branch — add/update a Literal condition ──────
-                # Pick "Literal" from the matching right operand dropdown;
-                # the write dispatch below uses the active tab in the Literal
-                # editor to pick the right control(s): Single Value → #LITtf,
-                # Range of Values → #LITtfFrom/#LITtfTo, List of Values →
-                # #LITtfList (multi-value reconciliation).
-                await runner.select(
-                    "Right Operand dropdown",
-                    value="Literal",
-                    selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
+                # Close the Data Selections dialog
+                await runner.click("Close Data Selection dialog", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
+            except Exception as ds_err:
+                # A Data Selection failure (e.g. a Left Operand from the
+                # Excel file that isn't in JDE and can't be added) must NOT
+                # skip Processing Options. Record it, snapshot for
+                # debugging, close the dialog best-effort, and fall through
+                # to the Processing Options block below.
+                msg = f"Data Selection failed: {ds_err}"
+                print(f"[{label}] ✖ {msg} — continuing with Processing Options")
+                runner.record_failure("Data Selection", str(ds_err))
+                field_errors.append(str(ds_err))
+                await _diagnostic_screenshot(
+                    page, f"jde_ds_fail_{report.get('app_report', 'unknown')}"
                 )
                 try:
-                    await write_literal_by_active_tab(page, runner, str(data_value))
-                except LiteralTypeMismatch as tmerr:
-                    # The value's data type doesn't fit the active tab. Leave
-                    # the field unchanged (the literal was never committed),
-                    # record the error, and continue with the next field.
-                    msg = f"{left_operand}: {tmerr}"
-                    print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
-                    runner.record_failure(f"Data Selection: {left_operand}", str(tmerr))
-                    field_errors.append(msg)
-                    if row_is_locked and row_number:
-                        await lock_data_selection_row(runner, row_number)
-                    continue
-                except LiteralTabNotDetected as tnderr:
-                    # Active tab couldn't be detected — we can't tell the
-                    # required data type. Record a warning, leave the field
-                    # unchanged, and continue with the remaining fields.
-                    msg = f"{left_operand}: {tnderr}"
-                    print(f"[{label}]   ↳ ⚠ {msg} — leaving field unchanged (warning)")
-                    runner.record_warning(f"Data Selection: {left_operand}", str(tnderr))
-                    field_warnings.append(msg)
-                    if row_is_locked and row_number:
-                        await lock_data_selection_row(runner, row_number)
-                    continue
-                await runner.screenshot()
-
-                # Restore the lock state — only for the edit branch.
-                # (REMOVE already `continue`d above.)
-                if row_is_locked and row_number:
-                    await lock_data_selection_row(runner, row_number)
-
-            # Close the Data Selections dialog
-            await runner.click("Close Data Selection dialog", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
+                    await runner.click(
+                        "Close Data Selection dialog",
+                        selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+                    )
+                except Exception:
+                    pass
 
         # --- Processing Options -- loop once per entry
         if processing_options:
@@ -1893,8 +1929,6 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             await runner.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
 
         # ── Done ────────────────────────────────────────────────────────
-        await runner.screenshot()
-
         warn_summary = "; ".join(field_warnings)
         if field_warnings:
             print(f"[{label}] ⚠ {len(field_warnings)} warning(s): {warn_summary}")
@@ -1928,10 +1962,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         # Step-level failure (element not found, timeout, etc.) — stop this iteration,
         # let the caller (dashboard) move on to the next one.
         print(f"[{label}] ✖ FAILED: {e}")
-        try:
-            await page.screenshot(path=_run_screenshot_path(f"jde_full_error_{report.get('app_report', 'unknown')}"), full_page=True)
-        except Exception:
-            pass
+        await _diagnostic_screenshot(page, f"jde_full_error_{report.get('app_report', 'unknown')}")
         return {
             "status": "fail",
             "error": str(e),
@@ -1943,10 +1974,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         import traceback
         print(f"[{label}] ✖ UNEXPECTED ERROR: {type(e).__name__}: {e}")
         traceback.print_exc()
-        try:
-            await page.screenshot(path=_run_screenshot_path(f"jde_full_unexpected_{report.get('app_report', 'unknown')}"), full_page=True)
-        except Exception:
-            pass
+        await _diagnostic_screenshot(page, f"jde_full_unexpected_{report.get('app_report', 'unknown')}")
         return {
             "status": "fail",
             "error": f"{type(e).__name__}: {e}",
