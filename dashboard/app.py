@@ -206,6 +206,13 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         row_current = rows_by_index.get(JDE_META_ROW_CURRENT, [])
         row_new = rows_by_index.get(JDE_META_ROW_NEW, [])
 
+        # Column A of Row 3 holds the "Copy from" label in the copy workflow.
+        # When that cell is EMPTY the sheet describes edits to EXISTING versions
+        # instead of copying: Row 4 (New Version) is unused and each column's
+        # Row 3 value is the version to open and edit in place.
+        copy_label = _cell(row_current, 0)  # column A of Row 3
+        is_copy_mode = bool(copy_label)
+
         # Rows from row 5 down are split into two sections by a separator row
         # whose column A holds the constant "PO Tab":
         #
@@ -288,7 +295,10 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                 if not has_values:
                     continue
 
-            if not new_ver or not current:
+            # Copy mode needs both the source (current) and target (new)
+            # version. Edit mode only needs the existing version (Row 3);
+            # Row 4 (new version) is unused.
+            if is_copy_mode and (not new_ver or not current):
                 skipped.append({
                     "row": col_letter,
                     "app_report": app_report,
@@ -296,6 +306,13 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                         f"Column {col_letter} missing "
                         f"{'current version' if not current else 'new version'}"
                     ),
+                })
+                continue
+            if not is_copy_mode and not current:
+                skipped.append({
+                    "row": col_letter,
+                    "app_report": app_report,
+                    "reason": f"Column {col_letter} missing version to edit (Row 3)",
                 })
                 continue
 
@@ -348,8 +365,11 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                 "report": {
                     "app_report": app_report,
                     "current_version": str(current).strip(),
-                    "new_version": str(new_ver).strip(),
+                    "new_version": str(new_ver).strip() if new_ver else "",
                     "new_version_title": str(title).strip() if title else "",
+                    # True → copy current_version into new_version (default
+                    # workflow). False → edit current_version in place.
+                    "copy_version": is_copy_mode,
                 },
                 "data_selections": data_selections,
                 "processing_options": processing_options,
@@ -598,11 +618,12 @@ def create_dashboard_app() -> FastAPI:
         # Log a per-column summary for debugging
         for g in _report_groups:
             _session.logger.info(
-                "Report col %s: app=%s current=%s new=%s DS=%d PO=%d",
+                "Report col %s: app=%s current=%s new=%s mode=%s DS=%d PO=%d",
                 g["row_index"],
                 g["report"].get("app_report"),
                 g["report"].get("current_version"),
                 g["report"].get("new_version"),
+                "copy" if g["report"].get("copy_version", True) else "edit",
                 len(g["data_selections"]),
                 len(g["processing_options"]),
             )
@@ -617,6 +638,7 @@ def create_dashboard_app() -> FastAPI:
                 "current_version": report.get("current_version", ""),
                 "new_version": report.get("new_version", ""),
                 "new_version_title": report.get("new_version_title", ""),
+                "copy_version": report.get("copy_version", True),
                 "data_selections_count": len(group["data_selections"]),
                 "processing_options_count": len(group["processing_options"]),
             })
@@ -644,6 +666,7 @@ def create_dashboard_app() -> FastAPI:
                 "current_version": r.get("current_version", ""),
                 "new_version": r.get("new_version", ""),
                 "new_version_title": r.get("new_version_title", ""),
+                "copy_version": r.get("copy_version", True),
                 "data_selections_count": len(g["data_selections"]),
                 "processing_options_count": len(g["processing_options"]),
             })

@@ -1495,7 +1495,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
     # Reset the step counter so each iteration's logs start at S001
     StepRunner.reset_step_counter()
     runner = StepRunner(page)
-    label = f"{report.get('app_report', '?')}/{report.get('new_version', '?')}"
+    # copy_version True (default): copy current_version into a new version.
+    # False: edit current_version in place — skip the copy and don't use
+    # new_version. Old JSON test cases without the flag default to copy.
+    copy_version = bool(report.get("copy_version", True))
+    _version_label = report.get("new_version") if copy_version else report.get("current_version")
+    label = f"{report.get('app_report', '?')}/{_version_label or '?'}"
 
     try:
         # ── Submit Job ──────────────────────────────────────────────────
@@ -1541,7 +1546,9 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         )
         await runner.key_press("Ctrl+Alt+I")
 
-        # ── Search current version ──────────────────────────────────────
+        # ── Search the version to work on ───────────────────────────────
+        # Copy mode: current_version is the source we copy from.
+        # Edit mode: current_version is the existing version we edit in place.
         await runner.type(
             "version QBE filter",
             value=report["current_version"],
@@ -1549,35 +1556,41 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
         )
         await runner.key_press("Enter")
 
-        # ── Select & Copy ───────────────────────────────────────────────
-        await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
-        await runner.click("Copy button", selector="#hc_Copy", iframe=IFRAME, selector_strategy="css")
+        if copy_version:
+            # ── Select & Copy → create the new version ──────────────────
+            await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
+            await runner.click("Copy button", selector="#hc_Copy", iframe=IFRAME, selector_strategy="css")
 
-        # ── Fill new version ────────────────────────────────────────────
-        await runner.type(
-            "New Version field",
-            value=report["new_version"],
-            selector=version_name_new, iframe=IFRAME, selector_strategy="css"
-        )
-        await runner.type(
-            "New Version Title",
-            value=report.get("new_version_title", ""),
-            selector=version_name_title, iframe=IFRAME, selector_strategy="css"
-        )
+            # ── Fill new version ────────────────────────────────────────
+            await runner.type(
+                "New Version field",
+                value=report["new_version"],
+                selector=version_name_new, iframe=IFRAME, selector_strategy="css"
+            )
+            await runner.type(
+                "New Version Title",
+                value=report.get("new_version_title", ""),
+                selector=version_name_title, iframe=IFRAME, selector_strategy="css"
+            )
 
-        # ── Check for errors (e.g. version already exists) ──────────────
-        await runner.check_error("#INYFEContent")
+            # ── Check for errors (e.g. version already exists) ──────────
+            await runner.check_error("#INYFEContent")
 
-        # ── Click OK ────────────────────────────────────────────────────
-        await runner.click("OK button", selector="#hc_OK", iframe=IFRAME, selector_strategy="css")
+            # ── Click OK ────────────────────────────────────────────────
+            await runner.click("OK button", selector="#hc_OK", iframe=IFRAME, selector_strategy="css")
 
-        # ── Search new version ──────────────────────────────────────────
-        await runner.type(
-            "version QBE filter",
-            value=report["new_version"],
-            selector=version_qbe_selector, iframe=IFRAME, selector_strategy="css"
-        )
-        await runner.key_press("Enter")
+            # ── Search the newly-created version so edits target it ─────
+            await runner.type(
+                "version QBE filter",
+                value=report["new_version"],
+                selector=version_qbe_selector, iframe=IFRAME, selector_strategy="css"
+            )
+            await runner.key_press("Enter")
+        else:
+            print(f"[{label}] Edit mode: editing existing version "
+                  f"{report['current_version']!r} in place (no copy)")
+
+        # ── Select the version's rows before opening the Row Menu ───────
         await runner.click("Select All checkbox", selector="#selectAll0_1", iframe=IFRAME, selector_strategy="css")
 
         # Per-field validation errors (wrong data type for the field / tab).
