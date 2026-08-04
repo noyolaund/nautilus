@@ -385,10 +385,11 @@ _DATE_ISO = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]00:00:00)?$")
 
 
 def _normalize_date_string(s: str) -> str:
-    """Reformat a date-looking string to JDE's MM/DD/YYYY.
+    """Reformat a date-looking string to JDE's DD/MM/YY.
 
-    Accepts US order (7/26/2026, 7-26-2026) and ISO (2026-07-26, optionally
-    with a midnight time). Returns *s* unchanged if it isn't a valid date.
+    The Excel export uses US order MM/DD/YYYY (07/26/2026); JDE expects
+    DD/MM/YY (26/07/26). Also accepts ISO (2026-07-26, optionally with a
+    midnight time). Returns *s* unchanged if it isn't a valid date.
     """
     m = _DATE_MDY.match(s)
     if m:
@@ -399,7 +400,7 @@ def _normalize_date_string(s: str) -> str:
             return s
         yyyy, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
     try:
-        return datetime(yyyy, mm, dd).strftime("%m/%d/%Y")
+        return datetime(yyyy, mm, dd).strftime("%d/%m/%y")
     except ValueError:
         return s
 
@@ -407,11 +408,11 @@ def _normalize_date_string(s: str) -> str:
 def _cell(row: list, idx0: int):
     """Safely read row[idx0], return None if out of range or empty-ish.
 
-    Date cells are normalized to JDE's MM/DD/YYYY format. openpyxl returns real
+    Date cells are normalized to JDE's DD/MM/YY format. openpyxl returns real
     Excel dates as datetime objects whose str() is an ISO
-    "2026-07-26 00:00:00" — JDE mis-parses that into e.g. "7-26-2026". We format
-    date objects as MM/DD/YYYY and reshape date-looking text to the same
-    zero-padded slash form so JDE stores the date correctly.
+    "2026-07-26 00:00:00" — JDE mis-parses that into e.g. "7-26-2026". The Excel
+    export writes dates as MM/DD/YYYY, so we format date objects and reshape
+    date-looking text to DD/MM/YY so JDE stores the date correctly.
     """
     if idx0 >= len(row):
         return None
@@ -419,7 +420,7 @@ def _cell(row: list, idx0: int):
     if v is None:
         return None
     if isinstance(v, (datetime, date)):
-        return v.strftime("%m/%d/%Y")
+        return v.strftime("%d/%m/%y")
     s = str(v).strip()
     if not s:
         return None
