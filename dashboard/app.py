@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
@@ -380,15 +380,50 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         wb.close()
 
 
+_DATE_MDY = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$")
+_DATE_ISO = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]00:00:00)?$")
+
+
+def _normalize_date_string(s: str) -> str:
+    """Reformat a date-looking string to JDE's MM/DD/YYYY.
+
+    Accepts US order (7/26/2026, 7-26-2026) and ISO (2026-07-26, optionally
+    with a midnight time). Returns *s* unchanged if it isn't a valid date.
+    """
+    m = _DATE_MDY.match(s)
+    if m:
+        mm, dd, yyyy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        m = _DATE_ISO.match(s)
+        if not m:
+            return s
+        yyyy, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        return datetime(yyyy, mm, dd).strftime("%m/%d/%Y")
+    except ValueError:
+        return s
+
+
 def _cell(row: list, idx0: int):
-    """Safely read row[idx0], return None if out of range or empty-ish."""
+    """Safely read row[idx0], return None if out of range or empty-ish.
+
+    Date cells are normalized to JDE's MM/DD/YYYY format. openpyxl returns real
+    Excel dates as datetime objects whose str() is an ISO
+    "2026-07-26 00:00:00" — JDE mis-parses that into e.g. "7-26-2026". We format
+    date objects as MM/DD/YYYY and reshape date-looking text to the same
+    zero-padded slash form so JDE stores the date correctly.
+    """
     if idx0 >= len(row):
         return None
     v = row[idx0]
     if v is None:
         return None
+    if isinstance(v, (datetime, date)):
+        return v.strftime("%m/%d/%Y")
     s = str(v).strip()
-    return s if s else None
+    if not s:
+        return None
+    return _normalize_date_string(s)
 
 
 def _col_letter(col_num: int) -> str:
