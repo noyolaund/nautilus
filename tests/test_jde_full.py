@@ -944,27 +944,47 @@ async def _read_lit_list_values(page: Page) -> list[str]:
 
 
 async def _select_lit_list_option(page: Page, needle: str) -> bool:
-    """Select the <option> in #litList whose text matches *needle* (case-insensitive)
-    and fire a change event so JDE registers the selection. Returns True on success."""
-    js = """(target) => {
-        const list = document.querySelector('#litList');
-        if (!list) return false;
-        const norm = (s) => (s || '').trim().toLowerCase();
-        const want = norm(target);
-        for (const opt of list.options) {
-            if (norm(opt.textContent) === want) {
-                for (const o of list.options) o.selected = false;
-                opt.selected = true;
-                list.value = opt.value;
-                list.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-            }
-        }
-        return false;
-    }"""
+    """Select the <option> in #litList whose text matches *needle*
+    (case-insensitive) so JDE's Delete button (#hc952) acts on it.
+
+    Prefers Playwright's native select_option — a real selection gesture that
+    updates selectedIndex and fires input/change the way JDE expects — because
+    a purely programmatic `.selected` is not always honored by the Delete
+    handler. Falls back to a JS selection + change event. Returns True on
+    success.
+    """
+    want = needle.strip().lower()
     for frame in page.frames:
         try:
-            if await frame.evaluate(js, needle):
+            loc = frame.locator("#litList")
+            if await loc.count() == 0:
+                continue
+            opts = await loc.evaluate(
+                "(el) => Array.from(el.options).map(o => (o.textContent || '').trim())"
+            )
+        except Exception:
+            continue
+        idx = next((i for i, o in enumerate(opts) if o.lower() == want), None)
+        if idx is None:
+            continue
+        try:
+            await loc.select_option(index=idx)
+            return True
+        except Exception:
+            pass
+        # Fallback: set the selection in JS and fire change on the same frame.
+        js = """(i) => {
+            const list = document.querySelector('#litList');
+            if (!list || i < 0 || i >= list.options.length) return false;
+            for (const o of list.options) o.selected = false;
+            list.options[i].selected = true;
+            list.selectedIndex = i;
+            list.value = list.options[i].value;
+            list.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }"""
+        try:
+            if await frame.evaluate(js, idx):
                 return True
         except Exception:
             continue
@@ -1153,36 +1173,61 @@ async def sync_literal_list_values(
       • Finally click #hc_Select to commit the panel.
     """
     desired = _split_multi_values(desired_raw)
-    current = await _read_lit_list_values(page)
     desired_norm = {v.lower() for v in desired}
-    current_norm = {c.lower() for c in current}
 
-    missing = [v for v in desired if v.lower() not in current_norm]
+    current = await _read_lit_list_values(page)
     extras = [c for c in current if c.lower() not in desired_norm]
-
     print(
-        f"      🔁 litList sync: desired={desired} current={current} "
-        f"missing={missing} extras={extras}"
+        f"      🔁 litList sync: desired={desired} current={current} extras={extras}"
     )
 
-    # Delete extras first so any single-select interactions don't collide
-    # with subsequent Add operations.
-    for extra in extras:
+    # 1. Delete every value that isn't desired, one at a time, RE-READING the
+    #    list each pass and verifying the value actually left before moving on.
+    #    JDE re-renders #litList after each delete (and the selection can be
+    #    dropped by that re-render), so a single fire-and-forget pass can leave
+    #    stale values behind — the bug this loop fixes. Values that refuse to
+    #    select are parked in `failed` so one stuck entry can't spin forever.
+    failed: set[str] = set()
+    guard = len(extras) * 4 + 8
+    while guard > 0:
+        guard -= 1
+        current = await _read_lit_list_values(page)
+        extras = [
+            c for c in current
+            if c.lower() not in desired_norm and c.lower() not in failed
+        ]
+        if not extras:
+            break
+        extra = extras[0]
         if not await _select_lit_list_option(page, extra):
             print(f"      ⚠ Could not select {extra!r} in #litList — skipping delete")
+            failed.add(extra.lower())
             continue
+        await asyncio.sleep(0.3)  # let the selection register before deleting
         await runner.click(
             f"Delete literal {extra!r} (#hc952)",
             selector="#hc952", iframe=IFRAME, selector_strategy="css",
         )
+        await asyncio.sleep(0.4)  # let #litList re-render after the delete
 
+    # Verify nothing stray survived (excludes values we couldn't select).
+    current = await _read_lit_list_values(page)
+    stray = [c for c in current if c.lower() not in desired_norm]
+    if stray:
+        print(f"      ⚠ litList still contains stray value(s) after delete: {stray}")
+
+    # 2. Add every desired value not already present (re-read post-delete).
+    current_norm = {c.lower() for c in await _read_lit_list_values(page)}
+    missing = [v for v in desired if v.lower() not in current_norm]
     for value in missing:
         await fill_jde_field(page, "#LITtfList", value)
         await runner.click(
             f"Add literal {value!r} (#hc950)",
             selector="#hc950", iframe=IFRAME, selector_strategy="css",
         )
+        await asyncio.sleep(0.2)  # let the row append before the next add
 
+    # 3. Commit the panel.
     await runner.click(
         "Select button (#hc_Select)",
         selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
