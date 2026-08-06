@@ -221,10 +221,6 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         ds_rows: list[dict] = []
         po_rows: list[dict] = []
         in_po_section = False
-        # Ordinal of each Left Operand among duplicates (by row order), so the
-        # Nth "Order Company" row maps to the Nth JDE row regardless of which
-        # report columns leave it blank.
-        lo_occurrence: dict[str, int] = {}
         for row_index, row in enumerate(
             ws.iter_rows(min_row=JDE_DATA_START_ROW, values_only=True),
             start=JDE_DATA_START_ROW,
@@ -250,14 +246,11 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                 })
             else:
                 left_operand = _clean_left_operand(a_str)
-                lo_key = left_operand.lower()
-                lo_occurrence[lo_key] = lo_occurrence.get(lo_key, 0) + 1
                 ds_rows.append({
                     "row_index": row_index,
                     "row": row,
                     "left_operand": left_operand,
                     "comparison": col_b,
-                    "occurrence": lo_occurrence[lo_key],
                 })
 
         # Determine how many report columns we have (columns C..N).
@@ -318,11 +311,20 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
 
             # Collect data selections for this report column
             data_selections: list[dict] = []
+            # Occurrence is counted PER COLUMN among the entries actually filled
+            # here (not globally across the sheet): each report column is a
+            # distinct JDE version, so its Nth filled "Order Company" maps to
+            # the Nth "Order Company" row in that version's grid. Counting
+            # globally would let a row left blank in THIS column still consume
+            # an ordinal, so a lone value would look for a non-existent Nth row.
+            col_occurrence: dict[str, int] = {}
             for r in ds_rows:
                 val = _cell(r["row"], col_idx0)
                 if val is None or not str(val).strip():
                     continue
                 data_new = str(val).strip()
+                lo_key = r["left_operand"].lower()
+                col_occurrence[lo_key] = col_occurrence.get(lo_key, 0) + 1
 
                 # Classify the edit behavior (remove / zero / null / literal).
                 # The literal data type is verified at execution time from
@@ -332,7 +334,7 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "comparison": r["comparison"],
                     "data_new": data_new,
                     "behavior": classify_ds_behavior(data_new),
-                    "occurrence": r["occurrence"],
+                    "occurrence": col_occurrence[lo_key],
                     "_source_row": r["row_index"],
                 })
 
