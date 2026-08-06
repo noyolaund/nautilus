@@ -206,13 +206,6 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         row_current = rows_by_index.get(JDE_META_ROW_CURRENT, [])
         row_new = rows_by_index.get(JDE_META_ROW_NEW, [])
 
-        # Column A of Row 3 holds the "Copy from" label in the copy workflow.
-        # When that cell is EMPTY the sheet describes edits to EXISTING versions
-        # instead of copying: Row 4 (New Version) is unused and each column's
-        # Row 3 value is the version to open and edit in place.
-        copy_label = _cell(row_current, 0)  # column A of Row 3
-        is_copy_mode = bool(copy_label)
-
         # Rows from row 5 down are split into two sections by a separator row
         # whose column A holds the constant "PO Tab":
         #
@@ -286,6 +279,12 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
             current = _cell(row_current, col_idx0)
             new_ver = _cell(row_new, col_idx0)
 
+            # Row 4 (New Version) decides the mode PER report column, regardless
+            # of the Column A / Row 3 "Copy from" label (which is ignored):
+            #   text  → copy current_version into this new version.
+            #   empty → edit current_version in place.
+            is_copy_mode = bool(new_ver)
+
             # Skip completely empty columns
             if not any([title, current, new_ver]):
                 # Also check if this column has ANY DS or PO values — if it
@@ -295,24 +294,17 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                 if not has_values:
                     continue
 
-            # Copy mode needs both the source (current) and target (new)
-            # version. Edit mode only needs the existing version (Row 3);
-            # Row 4 (new version) is unused.
-            if is_copy_mode and (not new_ver or not current):
+            # Both modes need the version to open (Row 3). Copy mode also needs
+            # the target name (Row 4), but that is what selected copy mode, so
+            # its presence is already guaranteed here.
+            if not current:
                 skipped.append({
                     "row": col_letter,
                     "app_report": app_report,
                     "reason": (
                         f"Column {col_letter} missing "
-                        f"{'current version' if not current else 'new version'}"
+                        f"{'current version' if is_copy_mode else 'version to edit'} (Row 3)"
                     ),
-                })
-                continue
-            if not is_copy_mode and not current:
-                skipped.append({
-                    "row": col_letter,
-                    "app_report": app_report,
-                    "reason": f"Column {col_letter} missing version to edit (Row 3)",
                 })
                 continue
 

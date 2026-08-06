@@ -87,7 +87,7 @@ class Priority(str, Enum):
 PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     Platform.SAP_FIORI: {"timeout_ms": 60_000, "settle_ms": 3000},
     Platform.SAP_WEBGUI: {"timeout_ms": 45_000, "settle_ms": 2000},
-    Platform.JDE_E1: {"timeout_ms": 45_000, "settle_ms": 2000},
+    Platform.JDE_E1: {"timeout_ms": 10_000, "settle_ms": 2000},
     Platform.SALESFORCE: {"timeout_ms": 45_000, "settle_ms": 2000},
     Platform.DYNAMICS_365: {"timeout_ms": 40_000, "settle_ms": 1500},
     Platform.GENERIC_WEB: {"timeout_ms": 30_000, "settle_ms": 1000},
