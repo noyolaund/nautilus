@@ -156,10 +156,12 @@ def _po_label_first_segment(text: str) -> str:
 #
 # Every extracted Data Selection value is classified into an edit *behavior*:
 #
-#   "remove"  → delete the matching row (REMOVE and "Blank" both map here)
-#   "zero"    → select the "Zero" option in the Right Operand combo box
-#   "null"    → select the "Null" option in the Right Operand combo box
-#   "literal" → a concrete value written via the Literal editor (default)
+#   "remove"    → delete the matching row (REMOVE and "Blank" both map here)
+#   "zero"      → select the "Zero" option in the Right Operand combo box
+#   "null"      → select the "Null" option in the Right Operand combo box
+#   "datetoday" → select the "DateToday [SL]" option in the Right Operand combo
+#                 box (Excel value "SL DateToday")
+#   "literal"   → a concrete value written via the Literal editor (default)
 #
 # The required data *type* for a literal is NOT inferred from the Left Operand
 # name — it is determined at execution time from JDE's active Literal tab
@@ -185,6 +187,9 @@ def classify_ds_behavior(value: str) -> str:
         return "zero"
     if low == "null":
         return "null"
+    # "SL DateToday" → select the "DateToday [SL]" Right Operand option.
+    if re.sub(r"\s+", " ", low) == "sl datetoday":
+        return "datetoday"
     return "literal"
 
 

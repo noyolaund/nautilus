@@ -1236,11 +1236,18 @@ async def sync_literal_list_values(
 
 # Option values that JDE uses for "not set to a real literal" — matching any
 # of these against a non-sentinel Excel value should NOT count as a match.
-_RIGHT_OPERAND_SENTINELS: set[str] = {"literal", "blank", "zero", "null"}
+_RIGHT_OPERAND_SENTINELS: set[str] = {
+    "literal", "blank", "zero", "null", "datetoday [sl]",
+}
 
-# Right Operand combo options for the "zero"/"null" behaviors — maps the
-# parsed behavior string to the exact option text JDE renders in the dropdown.
-_RIGHT_OPERAND_OPTION: dict[str, str] = {"zero": "Zero", "null": "Null"}
+# Right Operand combo options for behaviors that pick a plain dropdown option
+# (no Literal editor) — maps the parsed behavior string to the exact option
+# text JDE renders in the dropdown.
+_RIGHT_OPERAND_OPTION: dict[str, str] = {
+    "zero": "Zero",
+    "null": "Null",
+    "datetoday": "DateToday [SL]",
+}
 
 
 async def read_right_operand_selected_text(
@@ -1764,16 +1771,17 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                             current_right = await read_locked_right_operand_text(page, row_number)
                         else:
                             current_right = await read_right_operand_selected_text(page, row_number)
-                        if behavior in ("zero", "null"):
-                            if (current_right or "").strip().lower() == behavior:
+                        if behavior in _RIGHT_OPERAND_OPTION:
+                            option_text = _RIGHT_OPERAND_OPTION[behavior]
+                            if (current_right or "").strip().lower() == option_text.lower():
                                 print(
                                     f"[{label}]   ↳ Right Operand already "
-                                    f"{_RIGHT_OPERAND_OPTION[behavior]!r} — skipping"
+                                    f"{option_text!r} — skipping"
                                 )
                                 continue
                             print(
                                 f"[{label}]   ↳ setting Right Operand to "
-                                f"{_RIGHT_OPERAND_OPTION[behavior]!r}"
+                                f"{option_text!r}"
                             )
                         else:  # literal
                             is_multi = left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS
@@ -1819,10 +1827,10 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         lo_rows, _ = await list_left_operands(page, settle_ms=1000)
                         continue
 
-                    # ── Zero / Null branch ───────────────────────────────────
+                    # ── Combo-option branch (Zero / Null / DateToday [SL]) ────
                     # These are plain Right Operand combo options — no Literal
                     # editor, no value to type.
-                    if behavior in ("zero", "null"):
+                    if behavior in _RIGHT_OPERAND_OPTION:
                         await runner.select(
                             "Right Operand dropdown",
                             value=_RIGHT_OPERAND_OPTION[behavior],
