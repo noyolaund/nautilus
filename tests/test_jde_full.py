@@ -1943,56 +1943,70 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     print(f"[{label}]   ↳ no option label, skipping")
                     continue
 
-                # 1. Activate the tab — but only if it differs from the one
-                #    already active. Re-activating the same tab re-renders it
-                #    and resets values written on it, so consecutive options
-                #    sharing a tab must not re-click/re-select. Works for both
-                #    the combo box (#jdeWebTabBodynull) and clickable anchor
-                #    tabs.
-                if tab and _norm_ws(tab).lower() == current_tab:
-                    print(f"      Tab {tab!r} already active — not re-activating")
-                elif tab:
-                    combo_status, combo_label, combo_opts = (
-                        await find_po_tab_combo_option(page, tab)
-                    )
-                    if combo_status == "matched":
-                        print(
-                            f"      Tab {tab!r} → combo box "
-                            f"{PO_TAB_COMBO_SELECTOR} option {combo_label!r}"
+                try:
+                    # 1. Activate the tab — but only if it differs from the one
+                    #    already active. Re-activating the same tab re-renders it
+                    #    and resets values written on it, so consecutive options
+                    #    sharing a tab must not re-click/re-select. Works for both
+                    #    the combo box (#jdeWebTabBodynull) and clickable anchor
+                    #    tabs.
+                    if tab and _norm_ws(tab).lower() == current_tab:
+                        print(f"      Tab {tab!r} already active — not re-activating")
+                    elif tab:
+                        combo_status, combo_label, combo_opts = (
+                            await find_po_tab_combo_option(page, tab)
                         )
-                        await runner.select(
-                            f"Processing Options tab {tab!r}",
-                            value=combo_label,
-                            selector=PO_TAB_COMBO_SELECTOR,
-                            iframe=IFRAME, selector_strategy="css",
-                        )
-                    elif combo_status == "no_match":
-                        raise StepError(
-                            "Select Processing Options tab",
-                            f"Tab {tab!r} not found in combo box "
-                            f"{PO_TAB_COMBO_SELECTOR}; available: {combo_opts}",
-                            None,
-                        )
-                    else:  # not_present → classic clickable anchor tabs
-                        tab_selector = await find_processing_option_tab(page, tab)
-                        if not tab_selector:
+                        if combo_status == "matched":
+                            print(
+                                f"      Tab {tab!r} → combo box "
+                                f"{PO_TAB_COMBO_SELECTOR} option {combo_label!r}"
+                            )
+                            await runner.select(
+                                f"Processing Options tab {tab!r}",
+                                value=combo_label,
+                                selector=PO_TAB_COMBO_SELECTOR,
+                                iframe=IFRAME, selector_strategy="css",
+                            )
+                        elif combo_status == "no_match":
                             raise StepError(
-                                "Find Processing Options tab",
-                                f"Could not find tab named {tab!r}",
+                                "Select Processing Options tab",
+                                f"Tab {tab!r} not found in combo box "
+                                f"{PO_TAB_COMBO_SELECTOR}; available: {combo_opts}",
                                 None,
                             )
-                        print(f"      Tab matched: {tab_selector}")
-                        await runner.click(
-                            f"Tab {tab!r}",
-                            selector=tab_selector, iframe=IFRAME, selector_strategy="css",
-                        )
-                    current_tab = _norm_ws(tab).lower()
-                    # Give the tab content time to render
-                    await asyncio.sleep(1)
+                        else:  # not_present → classic clickable anchor tabs
+                            tab_selector = await find_processing_option_tab(page, tab)
+                            if not tab_selector:
+                                raise StepError(
+                                    "Find Processing Options tab",
+                                    f"Could not find tab named {tab!r}",
+                                    None,
+                                )
+                            print(f"      Tab matched: {tab_selector}")
+                            await runner.click(
+                                f"Tab {tab!r}",
+                                selector=tab_selector, iframe=IFRAME, selector_strategy="css",
+                            )
+                        current_tab = _norm_ws(tab).lower()
+                        # Give the tab content time to render
+                        await asyncio.sleep(1)
 
-                # 2. Fill this option's text box — located by searching the
-                # label text, falling back to its leading option number.
-                await fill_processing_option(page, option_label, processing_value)
+                    # 2. Fill this option's text box — located by searching the
+                    # label text, falling back to its leading option number.
+                    await fill_processing_option(page, option_label, processing_value)
+                except Exception as po_err:
+                    # The field wasn't found / couldn't be written (e.g. a
+                    # label absent on this tab). Record it so the dashboard
+                    # and report surface it, then continue with the rest of
+                    # the Processing Options instead of aborting the run.
+                    msg = f"{option_label}: {po_err}"
+                    print(f"[{label}]   ↳ ✖ {msg} — leaving option unchanged")
+                    runner.record_failure(f"Processing Option: {option_label}", str(po_err))
+                    field_errors.append(msg)
+                    await _diagnostic_screenshot(
+                        page, f"jde_po_fail_{report.get('app_report', 'unknown')}_{idx}"
+                    )
+                    continue
 
             # Apply (OK button closes the Processing Options dialog)
             await runner.click("OK button", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
