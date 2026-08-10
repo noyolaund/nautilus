@@ -134,6 +134,22 @@ def _clean_left_operand(raw: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _po_label_first_segment(text: str) -> str:
+    """Keep only the field-name portion of a Processing Option label (column B).
+
+    JDE exports pack the option's help text after its name, separated by a run
+    of 3+ spaces, e.g.:
+
+        "5.  Prevent Next Status Update    Blank = Update next status  1 = ..."
+
+    Only the leading segment ("5.  Prevent Next Status Update") names the field
+    used to locate its text box, so we split on the first run of 3 or more
+    spaces and keep the first part. Shorter gaps (like the "5.  " after the
+    number) are preserved.
+    """
+    return re.split(r" {3,}", str(text or "").strip(), maxsplit=1)[0].strip()
+
+
 # ---------------------------------------------------------------------------
 # Data Selection value behavior
 # ---------------------------------------------------------------------------
@@ -242,7 +258,9 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "row_index": row_index,
                     "row": row,
                     "tab": a_str,
-                    "option_label": col_b,
+                    # Keep only the field name; drop trailing help text that
+                    # JDE separates with 3+ spaces.
+                    "option_label": _po_label_first_segment(col_b),
                 })
             else:
                 left_operand = _clean_left_operand(a_str)
