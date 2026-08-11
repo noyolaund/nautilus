@@ -178,6 +178,39 @@ _JS_LIST_LEFT_OPERANDS = """() => {
 }"""
 
 
+async def verify_data_selection_dialog_open(
+    page: Page, attempts: int = 2, delay_s: float = 4.0,
+) -> bool:
+    """Confirm the Data Selection dialog actually opened.
+
+    JDE can be slow to render the dialog after the option is clicked, so on
+    each of *attempts* tries we wait *delay_s* seconds and then look, across
+    every frame, for ``#jdeFormTitle`` whose title (or text) is
+    "Data Selection". Returns True as soon as it's found, False if all attempts
+    are exhausted.
+    """
+    js = """() => {
+        const el = document.querySelector('#jdeFormTitle');
+        if (!el) return null;
+        return (el.getAttribute('title') || el.textContent || '').trim();
+    }"""
+    for attempt in range(1, attempts + 1):
+        await asyncio.sleep(delay_s)
+        for frame in page.frames:
+            try:
+                title = await frame.evaluate(js)
+            except Exception:
+                continue
+            if title and title.strip().lower() == "data selection":
+                print(f"      ✓ Data Selection dialog confirmed (attempt {attempt})")
+                return True
+        print(
+            f"      ⏳ Data Selection dialog not ready "
+            f"(attempt {attempt}/{attempts}, #jdeFormTitle title!='Data Selection')"
+        )
+    return False
+
+
 async def list_left_operands(
     page: Page, settle_ms: int = 0,
 ) -> tuple[list[dict], Optional[str]]:
@@ -1043,6 +1076,15 @@ class LiteralTabNotDetected(Exception):
     """
 
 
+class DataSelectionDialogError(Exception):
+    """The Data Selection dialog did not open after clicking the option.
+
+    This is CRITICAL: without the dialog there is no way to apply any Data
+    Selection or Processing Option for this version, so — unlike per-field
+    errors — it must abort the iteration (never be swallowed and continued).
+    """
+
+
 def _classify_value_shape(value: str) -> str:
     """Classify an Excel literal value by shape:
         'list'   → separated by ',' or ';' (one or more values)
@@ -1661,6 +1703,15 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
                 await runner.click("Data Selection option", selector="#HE0_127", iframe=IFRAME, selector_strategy="css")
 
+                # JDE can be slow to render the dialog. Wait and confirm it
+                # actually opened (#jdeFormTitle title="Data Selection"); if not,
+                # this is a CRITICAL failure — nothing downstream can run.
+                if not await verify_data_selection_dialog_open(page):
+                    raise DataSelectionDialogError(
+                        "Data Selection dialog did not open — #jdeFormTitle with "
+                        "title='Data Selection' not found after 2 attempts"
+                    )
+
                 # Enumerate the Left Operand column ONCE for the whole dialog (the
                 # grid doesn't change on a value edit — only when a row is added or
                 # removed, after which lo_rows is refreshed). Reused for every field
@@ -1889,6 +1940,16 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
 
                 # Close the Data Selections dialog
                 await runner.click("Close Data Selection dialog", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
+            except DataSelectionDialogError as crit:
+                # CRITICAL: the dialog never opened — record it for the
+                # dashboard and abort the iteration (do NOT fall through to
+                # Processing Options; nothing downstream can run).
+                print(f"[{label}] ✖ CRITICAL: {crit} — stopping this version")
+                runner.record_failure("Open Data Selection dialog", str(crit))
+                await _diagnostic_screenshot(
+                    page, f"jde_ds_dialog_not_open_{report.get('app_report', 'unknown')}"
+                )
+                raise StepError("Open Data Selection dialog", str(crit), None)
             except Exception as ds_err:
                 # A Data Selection failure (e.g. a Left Operand from the
                 # Excel file that isn't in JDE and can't be added) must NOT
