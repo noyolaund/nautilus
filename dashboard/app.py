@@ -54,26 +54,30 @@ PATH_TO_JSON: dict[str, str] = {
     "b":    "tests/test_cases/jde_b_path.json",
 }
 
-# Excel layout — new format exported directly from JDE.
+# Excel layout — template exported directly from JDE.
 #
-#   Row 1:   (blank or free-form header)
-#   Row 2:   Object Name (A/B) + New Version Title per report column
-#   Row 3:   "Copy from" label (A) + Current Version per report column
-#   Row 4:   "DS Field" (A), "DATA SELECTION" (B) + New Version per report column
-#   Row 5+:  Left Operand (A), Comparison (B) + New DS value per report column
-#            ... until a separator row whose column A == "PO Tab" ...
-#            then Processing Options: Tab (A), Option Number (B) + New value
-#            per report column.
+#   Row 1:   Object Name (App/Report) in Column A — must start with R or P.
+#   Row 3:   "Processing Options" label (A) + Current Version per report column
+#   Row 4:   New Version per report column
+#   Row 5:   New Version Title per report column
+#   Row 6+:  Processing Options — Tab (A), Option label (B) + New value per
+#            report column ...
+#            ... until a separator row whose column A == "Data Selection" ...
+#   then:    Data Selection rows — each report column (C+) holds the WHOLE
+#            instruction as one string, e.g.
+#              'BC Order Type (F4211)(DCTO) is equal to "DF; E2; KZ, SN"'
+#            → left operand "Order Type", comparison "is equal to", value
+#              "DF; E2; KZ, SN". (Columns A/B are unused for DS rows.)
 #
-# Each column from C onward is one report iteration. Data Selections are
-# the rows above the "PO Tab" separator; Processing Options are the rows
-# below it. Column A is the field/tab, B is the comparison/option number.
-JDE_META_ROW_TITLE = 2
-JDE_META_ROW_CURRENT = 3
-JDE_META_ROW_NEW = 4
-JDE_DATA_START_ROW = 5
-JDE_FIRST_REPORT_COL = 3  # column C
-JDE_PO_SEPARATOR = "po tab"  # column-A marker (compared lower-cased)
+# Each column from C onward is one report iteration. Processing Options come
+# first (rows 6 → the "Data Selection" separator); Data Selections follow it.
+JDE_OBJECT_NAME_ROW = 1       # Column A
+JDE_META_ROW_CURRENT = 3      # Current Version, per report column (C+)
+JDE_META_ROW_NEW = 4          # New Version, per report column (C+)
+JDE_META_ROW_TITLE = 5        # New Version Title, per report column (C+)
+JDE_DATA_START_ROW = 6        # Processing Options begin here
+JDE_FIRST_REPORT_COL = 3      # column C
+JDE_DS_SEPARATOR = "data selection"  # column-A marker → Data Selection section
 
 
 def _extract_object_name(cell_values: list) -> str:
@@ -150,6 +154,67 @@ def _po_label_first_segment(text: str) -> str:
     return re.split(r" {3,}", str(text or "").strip(), maxsplit=1)[0].strip()
 
 
+# JDE comparison phrases as they appear inside a combined Data Selection cell.
+# Ordered longest-first so "is greater than or equal to" is matched before
+# "is greater than".
+_JDE_COMPARISON_PHRASES: list[str] = [
+    "is greater than or equal to",
+    "is less than or equal to",
+    "is not equal to",
+    "is greater than",
+    "is less than",
+    "is equal to",
+]
+
+
+def _parse_ds_instruction(text: str) -> tuple[Optional[str], str, str]:
+    """Split a combined Data Selection cell into (left_operand, comparison, value).
+
+    In the current template each report column holds the whole instruction, e.g.
+
+        'BC Order Type (F4211)(DCTO) is equal to "DF; E2; KZ, SN"'
+
+    which splits into left operand "Order Type" (cleaned), comparison
+    "is equal to", and value "DF; E2; KZ, SN" (surrounding quotes stripped).
+
+    Returns (None, "", "") when the cell is blank. When no comparison phrase is
+    present the whole prefix is treated as the operand and any trailing quoted
+    chunk as the value.
+    """
+    s = str(text or "").strip()
+    if not s:
+        return None, "", ""
+
+    low = s.lower()
+    comparison = ""
+    split_at = -1
+    phrase_len = 0
+    for phrase in _JDE_COMPARISON_PHRASES:
+        i = low.find(phrase)
+        if i != -1:
+            comparison, split_at, phrase_len = phrase, i, len(phrase)
+            break
+
+    if split_at >= 0:
+        left_raw = s[:split_at]
+        value_raw = s[split_at + phrase_len:].strip()
+    else:
+        # No comparison phrase — trailing quoted chunk (if any) is the value.
+        m = re.search(r'"([^"]*)"\s*$', s)
+        if m:
+            left_raw, value_raw = s[:m.start()], m.group(0)
+        else:
+            left_raw, value_raw = s, ""
+
+    # Strip a single surrounding pair of double quotes from the value.
+    value = value_raw.strip()
+    vm = re.match(r'^"(.*)"$', value)
+    value = (vm.group(1) if vm else value.strip('"')).strip()
+    value = _normalize_date_string(value)
+
+    return _clean_left_operand(left_raw), comparison, value
+
+
 # ---------------------------------------------------------------------------
 # Data Selection value behavior
 # ---------------------------------------------------------------------------
@@ -198,7 +263,15 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
 
     Returns (report_groups, skipped) where each report_group has the same
     shape run_jde_full expects: {report, data_selections, processing_options}.
-    Processing Options come from the rows below the "PO Tab" separator row.
+
+    Layout (see the module comment near JDE_OBJECT_NAME_ROW): Object Name in
+    Row 1 / Column A; Current / New / Title in Rows 3 / 4 / 5 per report column
+    (C+); Processing Options from Row 6 down to the "Data Selection" separator;
+    Data Selection rows after it, each report column holding the whole
+    instruction as one string.
+
+    Raises ValueError when the file is not a valid template (Object Name in
+    Row 1 / Column A missing or not starting with R/P).
     """
     from openpyxl import load_workbook
 
@@ -210,38 +283,38 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
             )
         ws = wb[sheet_name]
 
-        # Read the first 4 rows in full (for Object Name detection + metadata)
-        header_cells: list = []
+        # Read the metadata rows (1..title) up-front.
         rows_by_index: dict[int, list] = {}
         for row_index, row in enumerate(
-            ws.iter_rows(min_row=1, max_row=JDE_META_ROW_NEW, values_only=True), start=1
+            ws.iter_rows(min_row=1, max_row=JDE_META_ROW_TITLE, values_only=True),
+            start=1,
         ):
             rows_by_index[row_index] = list(row)
-            for cell in row:
-                header_cells.append(cell)
 
-        app_report = _extract_object_name(header_cells)
+        # Object Name lives in Row 1 / Column A and MUST start with R or P;
+        # otherwise this isn't a valid JDE template.
+        row_object = rows_by_index.get(JDE_OBJECT_NAME_ROW, [])
+        obj_cell = row_object[0] if len(row_object) > 0 else None
+        app_report = _extract_object_name([obj_cell])
+        if not app_report or not app_report.upper().startswith(("R", "P")):
+            raise ValueError(
+                "Not a valid JDE template: Object Name (Row 1, Column A) must be "
+                "present and start with 'R' or 'P' "
+                f"(found {str(obj_cell).strip()!r})"
+            )
 
-        # Metadata rows
-        row_title = rows_by_index.get(JDE_META_ROW_TITLE, [])
+        # Per-column metadata rows.
         row_current = rows_by_index.get(JDE_META_ROW_CURRENT, [])
         row_new = rows_by_index.get(JDE_META_ROW_NEW, [])
+        row_title = rows_by_index.get(JDE_META_ROW_TITLE, [])
 
-        # Rows from row 5 down are split into two sections by a separator row
-        # whose column A holds the constant "PO Tab":
-        #
-        #   Data Selection rows (above the separator):
-        #     A = Left Operand, B = Comparison, C+ = New value per report
-        #   Processing Option rows (below the separator):
-        #     A = Tab, B = option label, C+ = New value per report
-        #
-        # Column B is the option's full label text (e.g. "1. Sales Order
-        # Entry (P4210)") — the executor searches it in JDE to locate the
-        # text box to fill. (In the previous format Tab/Option Number/New
-        # Value came from columns I/J/K; they now live in A/B/C+.)
-        ds_rows: list[dict] = []
+        # From Row 6 down: Processing Options first, then — after a row whose
+        # Column A == "Data Selection" — the Data Selection rows. Unlike PO
+        # rows (Tab in Column A), a DS row keeps its whole instruction in the
+        # per-report columns (C+), so Column A/B are ignored for DS.
         po_rows: list[dict] = []
-        in_po_section = False
+        ds_rows: list[dict] = []
+        in_ds_section = False
         for row_index, row in enumerate(
             ws.iter_rows(min_row=JDE_DATA_START_ROW, values_only=True),
             start=JDE_DATA_START_ROW,
@@ -250,15 +323,14 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
             col_a = row[0] if len(row) > 0 else None
             a_str = str(col_a).strip() if col_a is not None else ""
 
-            # Separator row → everything below belongs to Processing Options.
-            if a_str.lower() == JDE_PO_SEPARATOR:
-                in_po_section = True
-                continue
-            if not a_str:
-                continue
-
-            col_b = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
-            if in_po_section:
+            if not in_ds_section:
+                # Separator → everything below is Data Selection.
+                if a_str.lower() == JDE_DS_SEPARATOR:
+                    in_ds_section = True
+                    continue
+                if not a_str:
+                    continue  # PO rows need a Tab in Column A
+                col_b = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
                 po_rows.append({
                     "row_index": row_index,
                     "row": row,
@@ -268,19 +340,17 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "option_label": _po_label_first_segment(col_b),
                 })
             else:
-                left_operand = _clean_left_operand(a_str)
-                ds_rows.append({
-                    "row_index": row_index,
-                    "row": row,
-                    "left_operand": left_operand,
-                    "comparison": col_b,
-                })
+                # DS row — the instruction lives in the report columns (C+),
+                # so keep the row if any of those cells has content.
+                if any(
+                    c is not None and str(c).strip()
+                    for c in row[JDE_FIRST_REPORT_COL - 1:]
+                ):
+                    ds_rows.append({"row_index": row_index, "row": row})
 
         # Determine how many report columns we have (columns C..N).
-        # A column is considered "present" if any of Row 2/3/4 has data.
-        # Grow the search up to the widest row.
         max_len = max(
-            len(row_title), len(row_current), len(row_new),
+            len(row_current), len(row_new), len(row_title),
             *[len(r["row"]) for r in ds_rows],
             *[len(r["row"]) for r in po_rows],
             JDE_FIRST_REPORT_COL,
@@ -291,80 +361,41 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         # Excel columns are 1-indexed; column C = index 2 in a zero-based list
         for col_idx0 in range(JDE_FIRST_REPORT_COL - 1, max_len):
             col_letter = _col_letter(col_idx0 + 1)
-            title = _cell(row_title, col_idx0)
             current = _cell(row_current, col_idx0)
             new_ver = _cell(row_new, col_idx0)
+            title = _cell(row_title, col_idx0)
 
-            # Row 4 (New Version) decides the mode PER report column, regardless
-            # of the Column A / Row 3 "Copy from" label (which is ignored):
+            # Row 4 (New Version) decides the mode PER report column:
             #   text  → copy current_version into this new version.
             #   empty → edit current_version in place.
             is_copy_mode = bool(new_ver)
 
-            # Skip completely empty columns
-            if not any([title, current, new_ver]):
-                # Also check if this column has ANY DS or PO values — if it
-                # does, something is off. Otherwise just skip.
-                has_values = any(_cell(r["row"], col_idx0) for r in ds_rows) or \
-                    any(_cell(r["row"], col_idx0) for r in po_rows)
-                if not has_values:
-                    continue
-
-            # Both modes need the version to open (Row 3). Copy mode also needs
-            # the target name (Row 4), but that is what selected copy mode, so
-            # its presence is already guaranteed here.
-            if not current:
-                skipped.append({
-                    "row": col_letter,
-                    "app_report": app_report,
-                    "reason": (
-                        f"Column {col_letter} missing "
-                        f"{'current version' if is_copy_mode else 'version to edit'} (Row 3)"
-                    ),
-                })
-                continue
-
-            if app_report and not app_report.upper().startswith(("R", "P")):
-                skipped.append({
-                    "row": col_letter,
-                    "app_report": app_report,
-                    "reason": "App/Report must start with 'R' or 'P'",
-                })
-                continue
-
-            # Collect data selections for this report column
-            data_selections: list[dict] = []
+            # Collect the Data Selection instructions for this report column.
+            # Each cell holds the full "<operand> <comparison> "<value>"" string.
             # Occurrence is counted PER COLUMN among the entries actually filled
-            # here (not globally across the sheet): each report column is a
-            # distinct JDE version, so its Nth filled "Order Company" maps to
-            # the Nth "Order Company" row in that version's grid. Counting
-            # globally would let a row left blank in THIS column still consume
-            # an ordinal, so a lone value would look for a non-existent Nth row.
+            # here (not globally): each column is a distinct JDE version, so its
+            # Nth filled duplicate operand maps to the Nth matching grid row.
+            data_selections: list[dict] = []
             col_occurrence: dict[str, int] = {}
             for r in ds_rows:
-                val = _cell(r["row"], col_idx0)
-                if val is None or not str(val).strip():
+                raw = r["row"][col_idx0] if col_idx0 < len(r["row"]) else None
+                left_operand, comparison, value = _parse_ds_instruction(raw)
+                if not left_operand or not value:
                     continue
-                data_new = str(val).strip()
-                lo_key = r["left_operand"].lower()
+                lo_key = left_operand.lower()
                 col_occurrence[lo_key] = col_occurrence.get(lo_key, 0) + 1
-
-                # Classify the edit behavior (remove / zero / null / literal).
-                # The literal data type is verified at execution time from
-                # JDE's active tab, not from the Left Operand name.
                 data_selections.append({
-                    "left_operand": r["left_operand"],
-                    "comparison": r["comparison"],
-                    "data_new": data_new,
-                    "behavior": classify_ds_behavior(data_new),
+                    "left_operand": left_operand,
+                    "comparison": comparison,
+                    "data_new": value,
+                    "behavior": classify_ds_behavior(value),
                     "occurrence": col_occurrence[lo_key],
                     "_source_row": r["row_index"],
                 })
 
-            # Collect processing options for this report column (rows below
-            # the "PO Tab" separator). Tab = col A, option label = col B,
-            # New Value = this report's column. A blank cell means "do
-            # nothing for this option in this report".
+            # Collect the Processing Options for this report column. Tab = col A,
+            # option label = col B, New Value = this report's column. A blank
+            # cell means "do nothing for this option in this report".
             processing_options: list[dict] = []
             for r in po_rows:
                 val = _cell(r["row"], col_idx0)
@@ -376,6 +407,23 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "processing_new": str(val).strip(),
                     "_source_row": r["row_index"],
                 })
+
+            # Skip completely empty columns (no metadata and no DS/PO values).
+            if not any([current, new_ver, title]) and \
+                    not data_selections and not processing_options:
+                continue
+
+            # Both modes need the version to open (Row 3).
+            if not current:
+                skipped.append({
+                    "row": col_letter,
+                    "app_report": app_report,
+                    "reason": (
+                        f"Column {col_letter} missing "
+                        f"{'current version' if is_copy_mode else 'version to edit'} (Row 3)"
+                    ),
+                })
+                continue
 
             report_groups.append({
                 "row_index": col_letter,  # keep letter for the UI preview
