@@ -179,7 +179,7 @@ _JS_LIST_LEFT_OPERANDS = """() => {
 
 
 async def verify_data_selection_dialog_open(
-    page: Page, attempts: int = 2, delay_s: float = 4.0,
+    page: Page, attempts: int = 4, delay_s: float = 4.0,
 ) -> bool:
     """Confirm the Data Selection dialog actually opened.
 
@@ -1709,7 +1709,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 if not await verify_data_selection_dialog_open(page):
                     raise DataSelectionDialogError(
                         "Data Selection dialog did not open — #jdeFormTitle with "
-                        "title='Data Selection' not found after 2 attempts"
+                        "title='Data Selection' not found after 4 attempts"
                     )
 
                 # Enumerate the Left Operand column ONCE for the whole dialog (the
