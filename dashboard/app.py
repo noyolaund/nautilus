@@ -324,8 +324,10 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
             a_str = str(col_a).strip() if col_a is not None else ""
 
             if not in_ds_section:
-                # Separator → everything below is Data Selection.
-                if a_str.lower() == JDE_DS_SEPARATOR:
+                # Separator → everything below is Data Selection. The sheet
+                # writes it as "Data Selection:" (trailing colon), so ignore
+                # trailing punctuation/whitespace when matching.
+                if a_str.rstrip(":").strip().lower() == JDE_DS_SEPARATOR:
                     in_ds_section = True
                     continue
                 if not a_str:
