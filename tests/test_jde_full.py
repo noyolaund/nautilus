@@ -39,6 +39,12 @@ USERNAME = os.getenv("JDE_USERNAME", "")
 PASSWORD = os.getenv("JDE_PASSWORD", "")
 IFRAME = "iframe#e1menuAppIframe"
 
+# Settle time after each dropdown select while adding a new Data Selection row.
+# Selecting LeftOperand/Comparison fires onchange="FilterRightOp(N)", which
+# re-renders the downstream cells; without a pause the next select can time out
+# locating an element that JDE is still repainting.
+_ADD_ROW_SETTLE_S = float(os.getenv("JDE_ADD_ROW_SETTLE_S", "1.5"))
+
 
 def _run_screenshot_path(name: str) -> str:
     """Resolve an error-screenshot path inside the current run's screenshots
@@ -1618,8 +1624,11 @@ async def add_data_selection_row(
         raise LeftOperandAddFailed(
             f"No LeftOperand option resembled {left_operand_text!r}"
         )
-    # Selecting the operand triggers a JDE re-render of this row's cells.
-    await asyncio.sleep(0.5)
+    # Selecting the operand fires onchange="FilterRightOp(N)", which re-renders
+    # and repopulates this row's Comparison/RightOperand cells. Give JDE time to
+    # finish before touching #Comparison{N}, else the select times out locating
+    # it mid-re-render.
+    await asyncio.sleep(_ADD_ROW_SETTLE_S)
 
     # 2. Comparison — the operator equal to the Excel value (column B).
     resolved_comparison = resolve_comparison(comparison_text)
@@ -1631,6 +1640,8 @@ async def add_data_selection_row(
         iframe=IFRAME,
         selector_strategy="css",
     )
+    # Comparison also fires FilterRightOp(N) → let RightOperand re-render.
+    await asyncio.sleep(_ADD_ROW_SETTLE_S)
 
     # 3. Right Operand + value.
     await runner.select(
@@ -1640,6 +1651,7 @@ async def add_data_selection_row(
         iframe=IFRAME,
         selector_strategy="css",
     )
+    await asyncio.sleep(_ADD_ROW_SETTLE_S)
     # "Zero" / "Null" / "DateToday [SL]" need no value — selecting is the edit.
     if right_operand == "Literal":
         await write_literal_by_active_tab(page, runner, str(value))
