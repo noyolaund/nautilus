@@ -14,6 +14,7 @@ Or import and call programmatically (used by the dashboard):
 """
 
 import asyncio
+import difflib
 import os
 import re
 import sys
@@ -1076,6 +1077,15 @@ class LiteralTabNotDetected(Exception):
     """
 
 
+class LeftOperandAddFailed(Exception):
+    """A new Left Operand row could not be added / verified in JDE.
+
+    Raised (instead of a report-aborting StepError) so the dispatch loop can
+    record the error, leave that Data Selection unchanged, and continue with
+    the remaining fields.
+    """
+
+
 class DataSelectionDialogError(Exception):
     """The Data Selection dialog did not open after clicking the option.
 
@@ -1491,6 +1501,78 @@ async def find_empty_left_operand_row(page: Page) -> Optional[str]:
     return None
 
 
+async def select_left_operand_by_similarity(
+    page: Page, runner: StepRunner, row_number: str, desired: str,
+) -> Optional[str]:
+    """Select, in #LeftOperand{row_number}, the option most similar to *desired*.
+
+    JDE renders each option with qualifiers appended
+    ("Order Type (F4211) (DCTO) [BC]"), so an exact value select of the cleaned
+    Excel name ("Order Type") never matches. We enumerate the options, normalize
+    each with _clean_operand_for_match, and pick the best match: an exact
+    normalized equality wins outright, then substring containment, then the
+    highest difflib ratio. Returns the chosen option text, or None if no option
+    is a reasonable match.
+    """
+    js = """(rid) => {
+        const sel = document.getElementById(rid);
+        if (!sel) return null;
+        return Array.from(sel.options).map((o, i) => ({
+            index: i, text: (o.textContent || '').trim(),
+        }));
+    }"""
+    owner = None
+    options: list[dict] = []
+    for frame in page.frames:
+        try:
+            res = await frame.evaluate(js, f"LeftOperand{row_number}")
+        except Exception:
+            continue
+        if res is not None:
+            owner, options = frame, res
+            break
+    if not options:
+        return None
+
+    key = _clean_operand_for_match(desired)
+    best = None
+    best_score = -1.0
+    for o in options:
+        text = o["text"]
+        if not text:
+            continue
+        cand = _clean_operand_for_match(text)
+        if cand == key and key:
+            best, best_score = o, 2.0            # exact normalized match wins
+            break
+        score = difflib.SequenceMatcher(None, key, cand).ratio()
+        if key and key in cand:
+            score = max(score, 0.9)              # strong boost for containment
+        if score > best_score:
+            best, best_score = o, score
+
+    # Guard against a nonsense pick when nothing really resembles the operand
+    # (exact matches score 2.0 and substring containment 0.9, so both pass).
+    if best is None or (best_score < 0.5 and not (key and key in _clean_operand_for_match(best["text"]))):
+        return None
+
+    print(
+        f"        LeftOperand similarity: {desired!r} → {best['text']!r} "
+        f"(score {best_score:.2f})"
+    )
+    try:
+        await owner.locator(f"#LeftOperand{row_number}").select_option(index=best["index"])
+    except Exception:
+        # Fallback to the runner's select by the exact option text.
+        await runner.select(
+            f"LeftOperand{row_number}",
+            value=best["text"],
+            selector=f"#LeftOperand{row_number}",
+            iframe=IFRAME, selector_strategy="css",
+        )
+    return best["text"]
+
+
 async def add_data_selection_row(
     page: Page,
     runner: StepRunner,
@@ -1498,16 +1580,22 @@ async def add_data_selection_row(
     comparison_text: str,
     value: str,
     right_operand: str = "Literal",
-) -> None:
-    """Populate the last empty Data Selection row.
+) -> list[dict]:
+    """Add a new Data Selection row for a Left Operand JDE doesn't have yet.
 
-    Sequence:
-      1. Pick the field name from the last empty #LeftOperand{N}
-      2. Pick the comparison operator from the matching #Comparison{N}
-         (translated via COMPARISON_MAP)
-      3. Set #RightOperand{N} to *right_operand*. For "Literal" the value is
-         typed into the Literal editor and committed; for "Zero" / "Null"
-         selecting the option is all that's needed.
+    Sequence (operates on the last empty grid row, #...{N}):
+      1. #LeftOperand{N}: select the option with the highest similarity to the
+         Excel operand (options carry qualifiers, so exact match won't do).
+      2. #Comparison{N}: select the operator equal to the Excel comparison
+         (column B, translated via COMPARISON_MAP).
+      3. #RightOperand{N}: set *right_operand* and, for "Literal", write the
+         Excel value via the existing active-tab writer.
+      4. Verify the operand now appears by re-reading JDE's full Left Operand
+         list and confirming the added name is present.
+
+    Returns the refreshed Left Operand enumeration (so the caller can reuse it
+    as its grid cache). Raises LeftOperandAddFailed if no similar option exists
+    or the operand is absent after the add.
     """
     row_number = await find_empty_left_operand_row(page)
     if not row_number:
@@ -1522,14 +1610,18 @@ async def add_data_selection_row(
         f"{left_operand_text!r} {comparison_text!r} {value!r}"
     )
 
-    await runner.select(
-        f"LeftOperand{row_number}",
-        value=left_operand_text,
-        selector=f"#LeftOperand{row_number}",
-        iframe=IFRAME,
-        selector_strategy="css",
+    # 1. Left Operand — pick the most similar option in the expandable menu.
+    chosen = await select_left_operand_by_similarity(
+        page, runner, row_number, left_operand_text
     )
+    if chosen is None:
+        raise LeftOperandAddFailed(
+            f"No LeftOperand option resembled {left_operand_text!r}"
+        )
+    # Selecting the operand triggers a JDE re-render of this row's cells.
+    await asyncio.sleep(0.5)
 
+    # 2. Comparison — the operator equal to the Excel value (column B).
     resolved_comparison = resolve_comparison(comparison_text)
     print(f"        Comparison: {comparison_text!r} → {resolved_comparison!r}")
     await runner.select(
@@ -1540,6 +1632,7 @@ async def add_data_selection_row(
         selector_strategy="css",
     )
 
+    # 3. Right Operand + value.
     await runner.select(
         f"RightOperand{row_number}",
         value=right_operand,
@@ -1547,9 +1640,22 @@ async def add_data_selection_row(
         iframe=IFRAME,
         selector_strategy="css",
     )
-    # "Zero" / "Null" need no value — selecting the option is the whole edit.
+    # "Zero" / "Null" / "DateToday [SL]" need no value — selecting is the edit.
     if right_operand == "Literal":
         await write_literal_by_active_tab(page, runner, str(value))
+
+    # 4. Verify: the operand must now be in JDE's full Left Operand list.
+    rows, _ = await list_left_operands(page, settle_ms=1000)
+    key = _clean_operand_for_match(left_operand_text)
+    jde_names = [_clean_operand_for_match(r["value"]) for r in rows if r.get("value")]
+    present = bool(key) and (key in jde_names or any(key in n for n in jde_names))
+    if not present:
+        raise LeftOperandAddFailed(
+            f"{left_operand_text!r} not found in JDE Left Operand list after add "
+            f"(JDE list: {[r['value'] for r in rows]})"
+        )
+    print(f"        ✓ Verified {left_operand_text!r} added ({len(rows)} rows now)")
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -1765,12 +1871,22 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                             continue
                         print(f"[{label}]   ↳ {exc} — adding as a new row")
                         try:
-                            await add_data_selection_row(
+                            # add_data_selection_row returns the refreshed grid
+                            # (it re-reads to verify the operand was added).
+                            lo_rows = await add_data_selection_row(
                                 page, runner, left_operand, comparison_value, data_value,
                                 right_operand=_RIGHT_OPERAND_OPTION.get(behavior, "Literal"),
                             )
-                            # A new row changed the grid — refresh the cache.
-                            lo_rows, _ = await list_left_operands(page, settle_ms=1000)
+                        except LeftOperandAddFailed as adderr:
+                            # Couldn't add / verify the operand — record it and
+                            # keep going with the remaining fields.
+                            msg = f"{left_operand}: {adderr}"
+                            print(f"[{label}]   ↳ ✖ {msg} — leaving field unchanged")
+                            runner.record_failure(f"Data Selection: {left_operand}", str(adderr))
+                            field_errors.append(msg)
+                            await _diagnostic_screenshot(
+                                page, f"jde_ds_addfail_{report.get('app_report', 'unknown')}_{idx}"
+                            )
                         except LiteralTypeMismatch as tmerr:
                             # Wrong data type for the field — leave it unset,
                             # record the error, and keep going.
