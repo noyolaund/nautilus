@@ -1579,6 +1579,73 @@ async def select_left_operand_by_similarity(
     return best["text"]
 
 
+async def select_comparison_by_text(
+    page: Page, row_number: str, desired_text: str,
+) -> bool:
+    """Select, in #Comparison{row_number}, the option matching *desired_text*.
+
+    JDE's Comparison options can carry a coded ``value`` and label whitespace
+    that differ from the plain phrase ("is equal to"), so a select by label or
+    value can fail to find them. We enumerate the options (logging them for
+    diagnosis), match on normalized text OR value — exact, then containment,
+    then best difflib ratio — and select by index. Returns True on success,
+    False if no option is a reasonable match.
+    """
+    js = """(rid) => {
+        const sel = document.getElementById(rid);
+        if (!sel) return null;
+        return Array.from(sel.options).map((o, i) => ({
+            index: i, text: (o.textContent || '').trim(), value: (o.value || ''),
+        }));
+    }"""
+    owner = None
+    options: list[dict] = []
+    for frame in page.frames:
+        try:
+            res = await frame.evaluate(js, f"Comparison{row_number}")
+        except Exception:
+            continue
+        if res is not None:
+            owner, options = frame, res
+            break
+    if not options:
+        print(f"        ✖ #Comparison{row_number} has no options to select")
+        return False
+
+    want = _norm_ws(desired_text).lower()
+    best = None
+    best_score = -1.0
+    for o in options:
+        t = _norm_ws(o["text"]).lower()
+        v = _norm_ws(o["value"]).lower()
+        if want and (t == want or v == want):
+            best, best_score = o, 2.0
+            break
+        score = difflib.SequenceMatcher(None, want, t).ratio()
+        if want and want in t:
+            score = max(score, 0.9)
+        if score > best_score:
+            best, best_score = o, score
+
+    print(
+        f"        Comparison options for #Comparison{row_number}: "
+        f"{[o['text'] for o in options]}"
+    )
+    if best is None or best_score < 0.5:
+        return False
+
+    print(
+        f"        Comparison match: {desired_text!r} → {best['text']!r} "
+        f"(score {best_score:.2f})"
+    )
+    try:
+        await owner.locator(f"#Comparison{row_number}").select_option(index=best["index"])
+        return True
+    except Exception as exc:
+        print(f"        ✖ select_option failed for #Comparison{row_number}: {exc}")
+        return False
+
+
 async def add_data_selection_row(
     page: Page,
     runner: StepRunner,
@@ -1633,13 +1700,11 @@ async def add_data_selection_row(
     # 2. Comparison — the operator equal to the Excel value (column B).
     resolved_comparison = resolve_comparison(comparison_text)
     print(f"        Comparison: {comparison_text!r} → {resolved_comparison!r}")
-    await runner.select(
-        f"Comparison{row_number}",
-        value=resolved_comparison,
-        selector=f"#Comparison{row_number}",
-        iframe=IFRAME,
-        selector_strategy="css",
-    )
+    if not await select_comparison_by_text(page, row_number, resolved_comparison):
+        raise LeftOperandAddFailed(
+            f"Could not select comparison {resolved_comparison!r} in "
+            f"#Comparison{row_number}"
+        )
     # Comparison also fires FilterRightOp(N) → let RightOperand re-render.
     await asyncio.sleep(_ADD_ROW_SETTLE_S)
 
