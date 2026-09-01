@@ -45,6 +45,10 @@ IFRAME = "iframe#e1menuAppIframe"
 # locating an element that JDE is still repainting.
 _ADD_ROW_SETTLE_S = float(os.getenv("JDE_ADD_ROW_SETTLE_S", "1.5"))
 
+# Settle after clicking a Literal editor tab so its controls render before we
+# type into them.
+_LITERAL_TAB_SETTLE_S = float(os.getenv("JDE_LITERAL_TAB_SETTLE_S", "0.8"))
+
 
 def _run_screenshot_path(name: str) -> str:
     """Resolve an error-screenshot path inside the current run's screenshots
@@ -1065,6 +1069,55 @@ async def detect_active_literal_tab(
     return None
 
 
+async def click_literal_tab(
+    page: Page, runner: StepRunner, tab_name: str,
+    timeout_ms: int = 6000, poll_ms: int = 250,
+) -> bool:
+    """Click the Literal editor tab whose visible text is *tab_name*
+    ('Single Value' / 'Range of Values' / 'List of Values').
+
+    The editor renders asynchronously after "Literal" is picked, so we poll for
+    the tab anchor (an ``<a href="javascript:ocLitPrompt(N)">`` link), tag it,
+    and click it via Playwright. Returns True once clicked, False if the tab
+    never appeared within the timeout.
+    """
+    want = _norm_ws(tab_name).lower()
+    js = """(want) => {
+        const norm = s => (s||'').split(/[\\s\\u00A0]+/).filter(Boolean).join(' ').toLowerCase();
+        const anchors = Array.from(document.querySelectorAll('a'));
+        let hit = anchors.find(a => norm(a.textContent) === want
+            && /litprompt/i.test(a.getAttribute('href') || ''));
+        if (!hit) hit = anchors.find(a => norm(a.textContent) === want);
+        if (!hit) return false;
+        hit.setAttribute('data-lit-tab-target', '1');
+        return true;
+    }"""
+    attempts = max(1, timeout_ms // poll_ms)
+    for attempt in range(attempts):
+        for frame in page.frames:
+            try:
+                found = await frame.evaluate(js, want)
+            except Exception:
+                continue
+            if found:
+                await runner.click(
+                    f"Literal tab {tab_name!r}",
+                    selector="a[data-lit-tab-target='1']",
+                    iframe=IFRAME, selector_strategy="css",
+                )
+                try:
+                    await frame.evaluate(
+                        """() => { const el = document.querySelector("a[data-lit-tab-target='1']");
+                                   if (el) el.removeAttribute('data-lit-tab-target'); }"""
+                    )
+                except Exception:
+                    pass
+                return True
+        if attempt < attempts - 1:
+            await asyncio.sleep(poll_ms / 1000)
+    return False
+
+
 class LiteralTypeMismatch(Exception):
     """The Excel value's shape doesn't match the active Literal editor tab.
 
@@ -1115,6 +1168,33 @@ def _classify_value_shape(value: str) -> str:
     return "single"
 
 
+def _classify_literal_value(value: str) -> tuple[str, list[str]]:
+    """Decide which Literal tab a value belongs to, by how many values it has.
+
+    Returns (shape, tokens):
+        1 value           → ('single', [v])          → Single Value tab
+        exactly 2 values  → ('range',  [a, b])       → Range of Values tab
+        3+ values         → ('list',   [v1, v2, ...]) → List of Values tab
+
+    Two values are either a numeric 'A - B' range or two ';'/','-separated
+    values (e.g. '402; 505'). Examples:
+        '4' / 'MOD' / '10501'                → single
+        '201 - 620' / '402; 505'             → range
+        '123; 21345; 2345; 1255;' / 'MOD..'  → list
+    """
+    s = _strip_edge_quotes(str(value or "").strip())
+    parts = [t.strip() for t in re.split(r"[;,]", s) if t.strip()]
+    if len(parts) >= 3:
+        return "list", parts
+    if len(parts) == 2:
+        return "range", parts
+    # A single token can still be a numeric 'A - B' range.
+    m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", s)
+    if m:
+        return "range", [m.group(1), m.group(2)]
+    return "single", [s]
+
+
 def _literal_tab_type_error(active_tab: Optional[str], value: str) -> Optional[str]:
     """Return a human-readable error if *value*'s shape doesn't match the
     active Literal editor tab, else None.
@@ -1152,49 +1232,39 @@ def _literal_tab_type_error(active_tab: Optional[str], value: str) -> Optional[s
 async def write_literal_by_active_tab(
     page: Page, runner: StepRunner, value: str,
 ) -> None:
-    """Detect the currently active tab in the Literal editor and write
-    *value* using that tab's controls, then click ``#hc_Select`` to commit.
+    """Write *value* into the Literal editor, choosing the tab from the value's
+    shape — NOT from whichever tab happens to be active — then commit.
 
-    Tab mapping:
-        Single Value    → #LITtf
-        Range of Values → #LITtfFrom / #LITtfTo  (Excel value must be 'A-B')
-        List of Values  → #LITtfList + #hc950 (Add) / #litList + #hc952 (Del)
-                          — reconciled via sync_literal_list_values.
+    Tab is chosen by how many values the Excel cell holds:
+        1 value           → 'Single Value'    → #LITtf
+        exactly 2 values  → 'Range of Values' → #LITtfFrom / #LITtfTo
+                            ('A - B' range, or two ';'/','-separated values)
+        3+ values         → 'List of Values'  → sync_literal_list_values
+                            (#LITtfList + #hc950 / #litList + #hc952)
 
-    Before writing, the Excel value's shape is checked against the active
-    tab; a mismatch raises LiteralTypeMismatch so the caller can record the
-    error and skip this field instead of writing bad data into JDE. If the
-    active tab can't be detected at all, LiteralTabNotDetected is raised.
+    The chosen tab is clicked first so the right controls are shown, then
+    ``#hc_Select`` commits (the List flow commits inside sync). If the tab can't
+    be found/clicked, LiteralTabNotDetected is raised so the caller records it
+    and moves on.
     """
-    active = await detect_active_literal_tab(page)
-    tab = (active or "").strip().lower()
-    print(f"      🏷 Literal editor active tab: {active!r}")
+    shape, tokens = _classify_literal_value(value)
+    tab_name = {
+        "single": "Single Value",
+        "range": "Range of Values",
+        "list": "List of Values",
+    }[shape]
+    print(f"      🏷 Literal value {value!r} → {shape} → tab {tab_name!r}")
 
-    # The active tab defines the required data type. If we can't detect it we
-    # must not guess (writing to the wrong control corrupts the selection) —
-    # signal the caller to record a warning and skip this field.
-    if not tab:
+    if not await click_literal_tab(page, runner, tab_name):
         raise LiteralTabNotDetected(
-            "could not detect the active Literal editor tab after waiting; "
-            "cannot determine the required data type — field left unchanged"
+            f"could not find/click the {tab_name!r} Literal tab for value "
+            f"{value!r} — field left unchanged"
         )
+    # Let the tab's controls render before typing into them.
+    await asyncio.sleep(_LITERAL_TAB_SETTLE_S)
 
-    # Verify the value's data type matches the active tab before writing.
-    type_error = _literal_tab_type_error(active, value)
-    if type_error:
-        print(f"      ✖ Type check failed: {type_error}")
-        raise LiteralTypeMismatch(type_error)
-
-    if "range" in tab:
-        raw = str(value or "").strip()
-        parts = raw.split("-", 1)
-        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
-            raise StepError(
-                "Range of Values",
-                f"Excel value {raw!r} is not a 'A-B' range",
-                None,
-            )
-        lo, hi = parts[0].strip(), parts[1].strip()
+    if shape == "range":
+        lo, hi = tokens[0], tokens[1]
         await fill_jde_field(page, "#LITtfFrom", lo)
         await fill_jde_field(page, "#LITtfTo", hi)
         await runner.click(
@@ -1203,14 +1273,13 @@ async def write_literal_by_active_tab(
         )
         return
 
-    if "list" in tab:
+    if shape == "list":
         # sync_literal_list_values itself clicks #hc_Select as its final commit.
         await sync_literal_list_values(page, runner, str(value))
         return
 
-    # Single Value — the classic single-literal flow (active tab confirmed
-    # above; an undetected tab already raised LiteralTabNotDetected).
-    await fill_jde_field(page, "#LITtf", str(value))
+    # Single Value.
+    await fill_jde_field(page, "#LITtf", tokens[0])
     await runner.click(
         "Select button", selector="#hc_Select",
         iframe=IFRAME, selector_strategy="css",
