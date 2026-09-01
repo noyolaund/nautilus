@@ -1576,6 +1576,49 @@ async def find_empty_left_operand_row(page: Page) -> Optional[str]:
     return None
 
 
+async def click_add_row_button(
+    page: Page, runner: StepRunner, timeout_ms: int = 4000, poll_ms: int = 250,
+) -> bool:
+    """Click JDE's 'Add Row' button to append a fresh blank Data Selection row.
+
+    The button is a ``<span class="StaticText"> Add Row </span>``. We poll for it
+    (text is whitespace-normalized), tag it, and click it via Playwright.
+    Returns True once clicked, False if it never appeared within the timeout.
+    """
+    js = """() => {
+        const norm = s => (s||'').split(/[\\s\\u00A0]+/).filter(Boolean).join(' ').toLowerCase();
+        const spans = Array.from(document.querySelectorAll('span'));
+        const hit = spans.find(s => norm(s.textContent) === 'add row');
+        if (!hit) return false;
+        hit.setAttribute('data-add-row-target', '1');
+        return true;
+    }"""
+    attempts = max(1, timeout_ms // poll_ms)
+    for attempt in range(attempts):
+        for frame in page.frames:
+            try:
+                found = await frame.evaluate(js)
+            except Exception:
+                continue
+            if found:
+                await runner.click(
+                    "Add Row button",
+                    selector="span[data-add-row-target='1']",
+                    iframe=IFRAME, selector_strategy="css",
+                )
+                try:
+                    await frame.evaluate(
+                        """() => { const el = document.querySelector("span[data-add-row-target='1']");
+                                   if (el) el.removeAttribute('data-add-row-target'); }"""
+                    )
+                except Exception:
+                    pass
+                return True
+        if attempt < attempts - 1:
+            await asyncio.sleep(poll_ms / 1000)
+    return False
+
+
 async def select_left_operand_by_similarity(
     page: Page, runner: StepRunner, row_number: str, desired: str,
 ) -> Optional[str]:
@@ -1741,11 +1784,24 @@ async def add_data_selection_row(
     """
     row_number = await find_empty_left_operand_row(page)
     if not row_number:
-        raise StepError(
-            "Add data selection row",
-            "No empty LeftOperand dropdown found — cannot add a new row",
-            None,
+        # JDE ran out of blank template rows — click "Add Row" to append one so
+        # the DS process can still place every Excel field.
+        print(
+            f"      ↳ No empty LeftOperand row — clicking 'Add Row' to make one "
+            f"for {left_operand_text!r}"
         )
+        if not await click_add_row_button(page, runner):
+            raise LeftOperandAddFailed(
+                f"No empty LeftOperand row and could not click 'Add Row' to add "
+                f"{left_operand_text!r}"
+            )
+        await asyncio.sleep(_ADD_ROW_SETTLE_S)  # let the new row render
+        row_number = await find_empty_left_operand_row(page)
+        if not row_number:
+            raise LeftOperandAddFailed(
+                f"'Add Row' did not produce an empty LeftOperand row for "
+                f"{left_operand_text!r}"
+            )
 
     print(
         f"      ➕ Adding new DS row #{row_number}: "
