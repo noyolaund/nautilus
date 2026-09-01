@@ -453,6 +453,57 @@ def _col_letter(col_num: int) -> str:
     return letters
 
 
+def _build_login_suite() -> "TestSuiteRequest":
+    """Build the login TestSuiteRequest from login_assert.json, overriding URL
+    and credentials from the environment. Reused by the /login endpoint and by
+    the automatic re-login inside execute_all when the JDE session drops."""
+    login_path = "tests/test_cases/login_assert.json"
+    if not Path(login_path).exists():
+        raise FileNotFoundError(f"Login suite not found: {login_path}")
+
+    login_raw = json.loads(Path(login_path).read_text(encoding="utf-8"))
+    login_raw.pop("_data_source", None)  # login suite has no data source
+
+    jde_url = os.getenv("JDE_URL", "").strip()
+    jde_user = os.getenv("JDE_USERNAME", "").strip()
+    jde_pass = os.getenv("JDE_PASSWORD", "").strip()
+
+    for tc in login_raw.get("test_cases", []):
+        if jde_url:
+            tc["base_url"] = jde_url
+        for step in tc.get("steps", []):
+            action = step.get("action")
+            name = (step.get("name") or "").lower()
+            if action == "navigate" and jde_url:
+                step.setdefault("data", {})["value"] = jde_url
+            elif action == "type" and "user" in name and jde_user:
+                step.setdefault("data", {})["value"] = jde_user
+            elif action == "type" and "password" in name and jde_pass:
+                step.setdefault("data", {})["value"] = jde_pass
+
+    login_suite = TestSuiteRequest(**login_raw)
+    login_suite.headless = False
+    return login_suite
+
+
+def _to_modify_group(group: dict) -> dict:
+    """Return a copy of *group* forced into edit/modify mode on the version that
+    a dropped-session iteration was creating.
+
+    When JDE logs out mid-iteration a copy may already have been created, so
+    re-running in copy mode would fail ("version already exists"). Instead we
+    open the New Version (falling back to Current Version) and rewrite its Data
+    Selection / Processing Options in place.
+    """
+    report = dict(group.get("report", {}))
+    target = report.get("new_version") or report.get("current_version")
+    report["current_version"] = target
+    report["new_version"] = ""          # empty New Version → edit mode
+    report["copy_version"] = False
+    new_group = dict(group)
+    new_group["report"] = report
+    return new_group
+
 
 def create_dashboard_app() -> FastAPI:
     from contextlib import asynccontextmanager
@@ -501,58 +552,12 @@ def create_dashboard_app() -> FastAPI:
         """Run login_assert.json — login only, no Excel data involved."""
         global _suite_request, _login_completed
 
-        login_path = "tests/test_cases/login_assert.json"
-        if not Path(login_path).exists():
-            raise HTTPException(status_code=400, detail=f"Login suite not found: {login_path}")
+        try:
+            login_suite = _build_login_suite()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
-        login_raw = json.loads(Path(login_path).read_text(encoding="utf-8"))
-        # Login suite has no _data_source by design; strip it if present anyway
-        login_raw.pop("_data_source", None)
-
-        # Override URL + credentials with values from .env so changing them
-        # there takes effect without editing login_assert.json.
-        jde_url = os.getenv("JDE_URL", "").strip()
-        jde_user = os.getenv("JDE_USERNAME", "").strip()
-        jde_pass = os.getenv("JDE_PASSWORD", "").strip()
-
-        for tc in login_raw.get("test_cases", []):
-            if jde_url:
-                tc["base_url"] = jde_url
-            for step in tc.get("steps", []):
-                action = step.get("action")
-                name = (step.get("name") or "").lower()
-
-                # navigate → JDE URL
-                if action == "navigate" and jde_url:
-                    step.setdefault("data", {})
-                    step["data"]["value"] = jde_url
-
-                # type step whose name mentions "user" → username
-                elif action == "type" and "user" in name and jde_user:
-                    step.setdefault("data", {})
-                    step["data"]["value"] = jde_user
-
-                # type step whose name mentions "password" → password
-                elif action == "type" and "password" in name and jde_pass:
-                    step.setdefault("data", {})
-                    step["data"]["value"] = jde_pass
-
-        _session.logger.info(
-            "Login overrides from .env — url=%s user=%s pass=%s",
-            jde_url or "(not set)",
-            jde_user or "(not set)",
-            "****" if jde_pass else "(not set)",
-        )
-        if not jde_url or not jde_user or not jde_pass:
-            _session.logger.warning(
-                "Some JDE_* values missing in .env — login_assert.json values "
-                "will be used for the missing ones."
-            )
-
-        login_suite = TestSuiteRequest(**login_raw)
-        login_suite.headless = False
         _suite_request = login_suite
-
         result = await _session.run_login(login_suite)
         _login_completed = bool(result.get("logged_in"))
         return result
@@ -732,7 +737,8 @@ def create_dashboard_app() -> FastAPI:
         """Run iterations: each report group runs the JDE Full Path Python flow."""
         global _execution_results
         import time
-        from tests.test_jde_full import run_jde_full
+        import asyncio as _asyncio
+        from tests.test_jde_full import run_jde_full, is_session_active
 
         if not _session.is_logged_in:
             raise HTTPException(status_code=400, detail="Not logged in. Run login first.")
@@ -746,28 +752,11 @@ def create_dashboard_app() -> FastAPI:
         if page is None:
             raise HTTPException(status_code=500, detail="Browser page is not available")
 
-        for i, group in enumerate(_report_groups, 1):
-            report = group["report"]
-            label = f"{report.get('app_report', '?')} → {report.get('new_version', '?')}"
-            print(f"\n=== Iteration {i}/{total}: {label} ===")
-            print(f"   Data selections: {len(group['data_selections'])}, Processing options: {len(group['processing_options'])}")
-
-            start = time.monotonic()
-            steps_raw = []  # list of StepResult objects from the runner
-            try:
-                result = await run_jde_full(page, group)
-                status = result.get("status", "fail")
-                error = result.get("error")
-                steps_raw = result.get("steps") or []
-            except Exception as exc:
-                import traceback
-                _session.logger.error("Iteration %d crashed: %s\n%s", i, exc, traceback.format_exc())
-                status = "fail"
-                error = f"Unhandled exception: {exc}"
-
-            duration_ms = (time.monotonic() - start) * 1000
-
-            # Convert every StepResult into a JSON-friendly dict for the report
+        def _record(iter_num: int, grp: dict, status: str, error, duration_ms: float,
+                    steps_raw: list, modified: bool):
+            report = grp["report"]
+            label = (f"{report.get('app_report', '?')} → "
+                     f"{report.get('new_version') or report.get('current_version', '?')}")
             steps_dicts = []
             total_tokens = 0
             for s in steps_raw:
@@ -784,34 +773,107 @@ def create_dashboard_app() -> FastAPI:
                     "started_at": s.started_at.isoformat() if s.started_at else None,
                     "finished_at": s.finished_at.isoformat() if s.finished_at else None,
                 })
-
-            # If the iteration failed before any step ran (e.g. crash), surface
-            # the error as a synthetic step so the report still shows something.
+            # Surface a failure that produced no steps as a synthetic step.
             if not steps_dicts and status == "fail":
                 steps_dicts.append({
-                    "step_id": "S000",
-                    "name": "Iteration crashed",
-                    "action": "custom",
-                    "status": "fail",
-                    "duration_ms": round(duration_ms),
-                    "tokens_used": 0,
-                    "error": error,
-                    "selector": None,
+                    "step_id": "S000", "name": "Iteration failed", "action": "custom",
+                    "status": "fail", "duration_ms": round(duration_ms), "tokens_used": 0,
+                    "error": error, "selector": None,
                 })
-
             _execution_results.append({
-                "iteration": i,
+                "iteration": iter_num,
                 "total": total,
                 "test_id": report.get("app_report", "?"),
-                "name": label,
+                "name": label + (" [modified after re-login]" if modified else ""),
                 "status": status,
                 "duration_ms": round(duration_ms),
                 "tokens": total_tokens,
                 "screenshot": "",
-                "data_selections_count": len(group["data_selections"]),
-                "processing_options_count": len(group["processing_options"]),
+                "modified": modified,
+                "data_selections_count": len(grp["data_selections"]),
+                "processing_options_count": len(grp["processing_options"]),
                 "steps": steps_dicts,
             })
+
+        # A very long batch (e.g. 50 versions) can outlive the JDE session. After
+        # each iteration we check whether the "Sign Out" control is still visible;
+        # if the session dropped, we re-login and re-run that same iteration in
+        # MODIFY mode (rewriting its New Version in place, since a copy may have
+        # been created before the logout), then continue with the rest.
+        MAX_RELOGIN = int(os.getenv("JDE_MAX_RELOGIN", "5"))
+        relogin_total = 0
+        modify_indices: set[int] = set()  # iterations to retry in modify mode
+
+        i = 0
+        while i < total:
+            group = _report_groups[i]
+            iter_num = i + 1
+            use_modify = i in modify_indices
+            run_group = _to_modify_group(group) if use_modify else group
+            report = run_group["report"]
+            label = (f"{report.get('app_report', '?')} → "
+                     f"{report.get('new_version') or report.get('current_version', '?')}")
+            print(f"\n=== Iteration {iter_num}/{total}: {label}"
+                  f"{' [modify after re-login]' if use_modify else ''} ===")
+            print(f"   Data selections: {len(group['data_selections'])}, "
+                  f"Processing options: {len(group['processing_options'])}")
+
+            start = time.monotonic()
+            steps_raw = []  # list of StepResult objects from the runner
+            try:
+                result = await run_jde_full(page, run_group)
+                status = result.get("status", "fail")
+                error = result.get("error")
+                steps_raw = result.get("steps") or []
+            except Exception as exc:
+                import traceback
+                _session.logger.error("Iteration %d crashed: %s\n%s", iter_num, exc, traceback.format_exc())
+                status = "fail"
+                error = f"Unhandled exception: {exc}"
+
+            duration_ms = (time.monotonic() - start) * 1000
+
+            # Did the JDE session drop during this iteration?
+            session_ok = True
+            try:
+                session_ok = await is_session_active(page)
+                if not session_ok:
+                    await _asyncio.sleep(1.0)  # avoid a transient false negative
+                    session_ok = await is_session_active(page)
+            except Exception:
+                session_ok = True  # never let the health check itself block a run
+
+            if not session_ok and i not in modify_indices and relogin_total < MAX_RELOGIN:
+                relogin_total += 1
+                print(f"[exec] ⚠ Session lost during iteration {iter_num} — "
+                      f"re-logging in (#{relogin_total}) and retrying in modify mode")
+                _session.logger.warning(
+                    "Session lost during iteration %d — re-login attempt #%d",
+                    iter_num, relogin_total,
+                )
+                try:
+                    relogin = await _session.run_login(_build_login_suite())
+                except Exception as exc:
+                    relogin = {"logged_in": False, "error": str(exc)}
+                if relogin.get("logged_in"):
+                    # Re-run THIS iteration in modify mode; don't record the
+                    # failed attempt, don't advance.
+                    modify_indices.add(i)
+                    page = _session._page or page  # refresh in case it changed
+                    continue
+                # Re-login failed — record this one and stop; the rest can't run.
+                _record(iter_num, run_group, "fail",
+                        "JDE session logged out during this iteration and automatic "
+                        f"re-login failed: {relogin.get('error') or 'login assert not confirmed'}",
+                        duration_ms, steps_raw, use_modify)
+                for j in range(i + 1, total):
+                    _record(j + 1, _report_groups[j], "fail",
+                            "Skipped: JDE session logged out and re-login failed",
+                            0.0, [], False)
+                break
+
+            _record(iter_num, run_group, status, error, duration_ms, steps_raw, use_modify)
+            i += 1
 
         # Generate report
         report_path = _generate_execution_report()

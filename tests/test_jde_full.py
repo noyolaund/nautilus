@@ -948,6 +948,33 @@ async def login(runner: StepRunner) -> None:
     await runner.assert_visible("Welcome!")
 
 
+async def is_session_active(page: Page) -> bool:
+    """True if the JDE session is still logged in.
+
+    JDE shows a "Sign Out" control in the header while a session is active; once
+    it times out / logs the user out, that control is gone (the login page is
+    shown instead). We look, across all frames, for a VISIBLE element whose text
+    is exactly "Sign Out". Returns False if none is visible.
+    """
+    js = """() => {
+        const norm = s => (s||'').split(/[\\s\\u00A0]+/).filter(Boolean).join(' ').toLowerCase();
+        const els = Array.from(document.querySelectorAll('a, span, button, div, td'));
+        for (const el of els) {
+            if (norm(el.textContent) !== 'sign out') continue;
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return true;
+        }
+        return false;
+    }"""
+    for frame in page.frames:
+        try:
+            if await frame.evaluate(js):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 # Left-operand names that use JDE's multi-value literal editor
 # (#litList + #LITtfList + #hc950 Add + #hc952 Delete) instead of a single #LITtf.
 MULTI_VALUE_LEFT_OPERANDS: set[str] = {
