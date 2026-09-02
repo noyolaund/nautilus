@@ -9,11 +9,13 @@
     --bg: #fafaf8; --card: #fff; --border: #e5e4df; --text: #2c2c2a;
     --muted: #73726c; --pass: #1d9e75; --pass-bg: #e1f5ee;
     --fail: #e24b4a; --fail-bg: #fcebeb; --accent: #534ab7; --accent-bg: #eeedfe;
+    --warn: #b26a00; --warn-bg: #fdf1dd;
     --mono: 'SF Mono','Fira Code',monospace;
 }
 @media(prefers-color-scheme:dark){:root{
     --bg:#1a1a1a;--card:#242424;--border:#3a3a38;--text:#e0ddd5;--muted:#9c9a92;
     --pass-bg:#0a2e20;--fail-bg:#2e1212;--accent-bg:#1e1d30;
+    --warn:#e0a54a;--warn-bg:#2e2410;
 }}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;padding:2rem;max-width:1100px;margin:0 auto}
@@ -43,6 +45,8 @@ td{padding:6px 10px;border-top:1px solid var(--border)}
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:500}
 .badge-pass{background:var(--pass-bg);color:var(--pass)}
 .badge-fail{background:var(--fail-bg);color:var(--fail)}
+.badge-copy{background:var(--accent-bg);color:var(--accent)}
+.badge-modify{background:var(--warn-bg);color:var(--warn)}
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:1rem 0}
 .metric{background:var(--bg);border-radius:8px;padding:.75rem 1rem;text-align:center}
 .metric-val{font-size:1.3rem;font-weight:600}
@@ -372,27 +376,44 @@ async function loadData() {
         const thead = document.querySelector('#data-table thead');
         const tbody = document.querySelector('#data-table tbody');
         if (preview.length > 0) {
-            thead.innerHTML = '<tr>' +
-                '<th style="width:50px">Col</th>' +
+            // A column is a "modify" run when its New Version cell is empty
+            // (copy_version === false). When EVERY row is modify, the New
+            // Version / New Version Title columns don't apply, so hide them.
+            const isModify = row => row.copy_version === false;
+            const allModify = preview.every(isModify);
+
+            let head = '<th style="width:50px">Col</th>' +
                 '<th>App / Report</th>' +
-                '<th>Current Version</th>' +
-                '<th>New Version</th>' +
-                '<th>New Version Title</th>' +
-                '<th>Data Selections</th>' +
-                '<th>Processing Options</th>' +
-                '</tr>';
+                '<th>Process</th>' +
+                '<th>' + (allModify ? 'Current Version (to modify)' : 'Current Version') + '</th>';
+            if (!allModify) {
+                head += '<th>New Version</th><th>New Version Title</th>';
+            }
+            head += '<th>Data Selections</th><th>Processing Options</th>';
+            thead.innerHTML = '<tr>' + head + '</tr>';
+
             tbody.innerHTML = preview.map(row => {
                 const dsCount = row.data_selections_count || 0;
                 const poCount = row.processing_options_count || 0;
-                return `<tr>
-                    <td>${row._row || ''}</td>
-                    <td>${row.app_report || ''}</td>
-                    <td>${row.current_version || ''}</td>
-                    <td>${row.new_version || ''}</td>
-                    <td>${row.new_version_title || ''}</td>
-                    <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${dsCount}</span></td>
-                    <td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${poCount}</span></td>
-                </tr>`;
+                const modify = isModify(row);
+                const proc = modify
+                    ? '<span class="badge badge-modify">Modify</span>'
+                    : '<span class="badge badge-copy">Copy</span>';
+                let cells =
+                    `<td>${row._row || ''}</td>` +
+                    `<td>${row.app_report || ''}</td>` +
+                    `<td>${proc}</td>` +
+                    `<td>${row.current_version || ''}</td>`;
+                if (!allModify) {
+                    // For a modify row New Version/Title don't apply → em dash.
+                    cells +=
+                        `<td>${modify ? '—' : (row.new_version || '')}</td>` +
+                        `<td>${modify ? '—' : (row.new_version_title || '')}</td>`;
+                }
+                cells +=
+                    `<td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${dsCount}</span></td>` +
+                    `<td><span class="badge" style="background:var(--accent-bg);color:var(--accent)">${poCount}</span></td>`;
+                return `<tr>${cells}</tr>`;
             }).join('');
         } else {
             thead.innerHTML = '';

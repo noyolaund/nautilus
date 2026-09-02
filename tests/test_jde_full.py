@@ -1181,6 +1181,16 @@ class DataSelectionDialogError(Exception):
     """
 
 
+class VersionNotFoundError(Exception):
+    """JDE raised an error after the Data Selection option was clicked because
+    the version being modified does not exist.
+
+    Nothing downstream (Data Selection or Processing Options) can run for a
+    missing version, so this aborts the current iteration; the caller records it
+    to the report/dashboard and the batch continues with the next iteration.
+    """
+
+
 def _classify_value_shape(value: str) -> str:
     """Classify an Excel literal value by shape:
         'list'   → separated by ',' or ';' (one or more values)
@@ -2038,6 +2048,18 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
                 await runner.click("Data Selection option", selector="#HE0_127", iframe=IFRAME, selector_strategy="css")
 
+                # If the version being modified doesn't exist, JDE shows an error
+                # banner here (same #INYFEContent banner the copy flow checks when
+                # naming a new version). Detect it and abort this iteration.
+                await asyncio.sleep(0.5)  # let the banner render
+                try:
+                    await runner.check_error("#INYFEContent")
+                except StepError as verr:
+                    raise VersionNotFoundError(
+                        f"Version {report.get('current_version', '?')!r} could not be "
+                        f"opened for Data Selection — JDE error: {verr}"
+                    )
+
                 # JDE can be slow to render the dialog. Wait and confirm it
                 # actually opened (#jdeFormTitle title="Data Selection"); if not,
                 # this is a CRITICAL failure — nothing downstream can run.
@@ -2295,6 +2317,16 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     page, f"jde_ds_dialog_not_open_{report.get('app_report', 'unknown')}"
                 )
                 raise StepError("Open Data Selection dialog", str(crit), None)
+            except VersionNotFoundError as verr:
+                # The version to modify doesn't exist — record it for the
+                # report/dashboard and abort THIS iteration so the batch moves
+                # on to the next one (nothing downstream can run).
+                print(f"[{label}] ✖ {verr} — skipping to next iteration")
+                runner.record_failure("Open version for Data Selection", str(verr))
+                await _diagnostic_screenshot(
+                    page, f"jde_ds_version_missing_{report.get('app_report', 'unknown')}"
+                )
+                raise StepError("Open version for Data Selection", str(verr), None)
             except Exception as ds_err:
                 # A Data Selection failure (e.g. a Left Operand from the
                 # Excel file that isn't in JDE and can't be added) must NOT
