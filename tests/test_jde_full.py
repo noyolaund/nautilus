@@ -1275,29 +1275,35 @@ def _classify_value_shape(value: str) -> str:
 
 
 def _classify_literal_value(value: str) -> tuple[str, list[str]]:
-    """Decide which Literal tab a value belongs to, by how many values it has.
+    """Decide which Literal tab a value belongs to.
 
     Returns (shape, tokens):
-        1 value           → ('single', [v])          → Single Value tab
-        exactly 2 values  → ('range',  [a, b])       → Range of Values tab
-        3+ values         → ('list',   [v1, v2, ...]) → List of Values tab
+        Range of Values → any value containing a dash ('234 - 234', '450-234'),
+                          OR exactly two ';'/','-separated values regardless of
+                          spacing ('FRD34; FRD56', 'GRS120;  GRS620').
+        List of Values  → 3+ ';'/','-separated values.
+        Single Value    → anything else ('4', 'MOD', '10501').
 
-    Two values are either a numeric 'A - B' range or two ';'/','-separated
-    values (e.g. '402; 505'). Examples:
-        '4' / 'MOD' / '10501'                → single
-        '201 - 620' / '402; 505'             → range
-        '123; 21345; 2345; 1255;' / 'MOD..'  → list
+    Examples:
+        '234 - 234' / '450-234' / 'FRD34; FRD56'   → range
+        '123; 21345; 2345; 1255;' / 'MOD..'        → list
+        '4' / 'MOD' / '10501'                      → single
     """
     s = _strip_edge_quotes(str(value or "").strip())
+
+    # A dash anywhere → Range of Values; split into the two bounds around the
+    # first dash (guard against a leading/trailing dash leaving an empty side).
+    if "-" in s:
+        lo, hi = (p.strip() for p in s.split("-", 1))
+        if lo and hi:
+            return "range", [lo, hi]
+
+    # Otherwise count ';'/','-separated values.
     parts = [t.strip() for t in re.split(r"[;,]", s) if t.strip()]
     if len(parts) >= 3:
         return "list", parts
     if len(parts) == 2:
         return "range", parts
-    # A single token can still be a numeric 'A - B' range.
-    m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", s)
-    if m:
-        return "range", [m.group(1), m.group(2)]
     return "single", [s]
 
 
