@@ -263,6 +263,75 @@ async def list_left_operands(
     return [], None
 
 
+# Enumerate every Data Selection row's Left Operand, Comparison and Right
+# Operand. Columns in #jdeGrid: Operator (1), Left Operand (2), Comparison (3),
+# Right Operand (4). Unlocked cells are <select>s (Left/Comparison show the
+# selected option's displayvalue/text; Right Operand keeps the real literal in
+# the option's `value`, sentinels in the text); locked cells are StaticText.
+_JS_LIST_DS_ROWS = """() => {
+    const scope = document.querySelector('#jdeGrid') || document;
+    const boxes = scope.querySelectorAll("input[type='checkbox'][id^='Select']");
+    if (!boxes.length) return null;
+    const norm = (s) => (s || '').split(/[\\s\\u00A0]+/).filter(Boolean).join(' ');
+
+    let leftCol = -1;
+    for (const cb of boxes) {
+        const tr = cb.closest('tr'); if (!tr) continue;
+        const sel = tr.querySelector("select[id^='LeftOperand']");
+        if (sel) { const td = sel.closest('td');
+            if (td) { leftCol = Array.prototype.indexOf.call(tr.children, td); break; } }
+    }
+    const compCol = leftCol >= 0 ? leftCol + 1 : -1;
+    const rightCol = leftCol >= 0 ? leftCol + 2 : -1;
+
+    const optDisplay = (sel) => {
+        const o = sel && sel.options[sel.selectedIndex];
+        return o ? (o.getAttribute('displayvalue') || o.textContent || '') : '';
+    };
+    const optRight = (sel) => {  // real literal lives in value; sentinel in text
+        const o = sel && sel.options[sel.selectedIndex];
+        return o ? ((o.value || '').trim() || o.textContent || '') : '';
+    };
+    const cellStatic = (tr, col) => {
+        if (col < 0 || !tr.children[col]) return '';
+        const cell = tr.children[col];
+        const span = cell.querySelector('span.StaticText, .StaticText');
+        return (span ? span.textContent : cell.textContent) || '';
+    };
+
+    const rows = [];
+    for (const cb of boxes) {
+        const m = cb.id.match(/^Select(\\d+)$/); if (!m) continue;
+        const tr = cb.closest('tr'); if (!tr) continue;
+        const lo = tr.querySelector("select[id^='LeftOperand']");
+        const co = tr.querySelector("select[id^='Comparison']");
+        const ro = tr.querySelector("select[id^='RightOperand']");
+        rows.push({
+            n: m[1],
+            left: norm(lo ? optDisplay(lo) : cellStatic(tr, leftCol)),
+            comparison: norm(co ? optDisplay(co) : cellStatic(tr, compCol)),
+            right: norm(ro ? optRight(ro) : cellStatic(tr, rightCol)),
+            locked: !lo,
+        });
+    }
+    return { rows: rows };
+}"""
+
+
+async def enumerate_data_selection_rows(page: Page) -> list[dict]:
+    """Return every Data Selection grid row as
+    ``[{n, left, comparison, right, locked}]`` (document order), reading Left
+    Operand, Comparison and Right Operand for both locked and unlocked rows."""
+    for frame in page.frames:
+        try:
+            res = await frame.evaluate(_JS_LIST_DS_ROWS)
+        except Exception:
+            continue
+        if res and res.get("rows"):
+            return res["rows"]
+    return []
+
+
 def _clean_operand_for_match(value: str) -> str:
     """Normalize a Left Operand name for matching by dropping the parenthesized
     and bracketed qualifiers JDE appends — data item description, table, alias,
@@ -1578,6 +1647,101 @@ def right_operand_matches_excel(
     return _collapse_ws(cur).lower() == _collapse_ws(exp).lower()
 
 
+def _expected_right_operand(sel: dict) -> str:
+    """The Right Operand value Excel expects for a Data Selection: the sentinel
+    option text for zero/null/datetoday, else the literal value."""
+    beh = sel.get("behavior", "literal")
+    if beh in _RIGHT_OPERAND_OPTION:
+        return _RIGHT_OPERAND_OPTION[beh]
+    return str(sel.get("data_new", ""))
+
+
+async def verify_data_selection_result(
+    page: Page, runner: StepRunner, data_selections: list[dict], label: str,
+) -> list[str]:
+    """After the Data Selection stage, re-read JDE's grid and compare it with
+    the Excel fields (ignoring REMOVE). The final JDE list must equal the Excel
+    list on Left Operand, Comparison and Right Operand.
+
+    Each difference is recorded (record_failure) so it lands in the report and
+    dashboard, and returned as a list of messages. Non-fatal — it only reports.
+    """
+    # Expected list from Excel — REMOVE rows are gone from JDE, so drop them.
+    expected = [s for s in data_selections if s.get("behavior") != "remove"]
+
+    actual = await enumerate_data_selection_rows(page)
+    # Only rows with a real Left Operand (skip the blank template row).
+    remaining = [
+        {
+            "left_n": _clean_operand_for_match(a.get("left", "")),
+            "comp_n": _norm_ws(a.get("comparison", "")).lower(),
+            "right": a.get("right", ""),
+            "raw": a,
+        }
+        for a in actual if _clean_operand_for_match(a.get("left", ""))
+    ]
+
+    diffs: list[str] = []
+    for sel in expected:
+        want_left = _clean_operand_for_match(sel.get("left_operand", ""))
+        want_comp = resolve_comparison(sel.get("comparison", "")).strip().lower()
+        want_right = _expected_right_operand(sel)
+        is_multi = sel.get("left_operand", "").strip().lower() in MULTI_VALUE_LEFT_OPERANDS
+        beh = sel.get("behavior", "literal")
+
+        def _right_ok(row_right: str) -> bool:
+            if beh in _RIGHT_OPERAND_OPTION:
+                return _norm_ws(row_right).lower() == _norm_ws(want_right).lower()
+            return right_operand_matches_excel(row_right, want_right, is_multi)
+
+        # Prefer a full match (left + comparison + right); consume it.
+        full = next(
+            (i for i, r in enumerate(remaining)
+             if r["left_n"] == want_left
+             and (not r["comp_n"] or r["comp_n"] == want_comp)
+             and _right_ok(r["right"])),
+            None,
+        )
+        if full is not None:
+            remaining.pop(full)
+            continue
+
+        # Left present but comparison/right differs — report the specifics.
+        partial = next((i for i, r in enumerate(remaining) if r["left_n"] == want_left), None)
+        if partial is not None:
+            r = remaining.pop(partial)
+            problems = []
+            if r["comp_n"] and r["comp_n"] != want_comp:
+                problems.append(f"comparison expected {want_comp!r} but JDE has {r['comp_n']!r}")
+            if not _right_ok(r["right"]):
+                problems.append(f"value expected {want_right!r} but JDE has {r['right']!r}")
+            diffs.append(
+                f"{sel.get('left_operand', '?')}: "
+                + (", ".join(problems) if problems else "mismatch")
+            )
+        else:
+            diffs.append(
+                f"{sel.get('left_operand', '?')}: expected in JDE "
+                f"({want_comp} / {want_right!r}) but not found"
+            )
+
+    # Anything still in JDE that Excel didn't list → unexpected extra rows.
+    for r in remaining:
+        diffs.append(
+            f"Unexpected JDE row not in Excel: {r['raw'].get('left', '')!r} "
+            f"{r['raw'].get('comparison', '')!r} {r['raw'].get('right', '')!r}"
+        )
+
+    if diffs:
+        print(f"[{label}] ⚠ DS verification found {len(diffs)} difference(s):")
+        for d in diffs:
+            print(f"[{label}]     • {d}")
+            runner.record_failure("Data Selection verification", d)
+    else:
+        print(f"[{label}] ✓ DS verification: JDE matches Excel ({len(expected)} field(s))")
+    return diffs
+
+
 async def find_empty_left_operand_row(page: Page) -> Optional[str]:
     """Return the row number of the last empty #LeftOperand{N} dropdown,
     or None if every visible LeftOperand row already has a field selected.
@@ -2304,6 +2468,22 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     # (REMOVE already `continue`d above.)
                     if row_is_locked and row_number:
                         await lock_data_selection_row(runner, row_number)
+
+                # ── Verify: JDE's final DS grid must match the Excel list ────
+                # Re-read Left Operand / Comparison / Right Operand for every
+                # row and compare with the Excel fields (REMOVE ignored). Any
+                # difference is recorded to the report — non-fatal.
+                try:
+                    ds_diffs = await verify_data_selection_result(
+                        page, runner, data_selections, label
+                    )
+                    if ds_diffs:
+                        field_errors.extend(ds_diffs)
+                        await _diagnostic_screenshot(
+                            page, f"jde_ds_verify_{report.get('app_report', 'unknown')}"
+                        )
+                except Exception as verr:
+                    print(f"[{label}]   ↳ ⚠ DS verification could not run: {verr}")
 
                 # Close the Data Selections dialog
                 await runner.click("Close Data Selection dialog", selector="#hc_Select", iframe=IFRAME, selector_strategy="css")
