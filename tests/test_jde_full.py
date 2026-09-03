@@ -1275,35 +1275,28 @@ def _classify_value_shape(value: str) -> str:
 
 
 def _classify_literal_value(value: str) -> tuple[str, list[str]]:
-    """Decide which Literal tab a value belongs to.
+    """Decide which Literal tab a value belongs to, by its separator.
 
     Returns (shape, tokens):
-        Range of Values → any value containing a dash ('234 - 234', '450-234'),
-                          OR exactly two ';'/','-separated values regardless of
-                          spacing ('FRD34; FRD56', 'GRS120;  GRS620').
-        List of Values  → 3+ ';'/','-separated values.
-        Single Value    → anything else ('4', 'MOD', '10501').
-
-    Examples:
-        '234 - 234' / '450-234' / 'FRD34; FRD56'   → range
-        '123; 21345; 2345; 1255;' / 'MOD..'        → list
-        '4' / 'MOD' / '10501'                      → single
+        Range of Values → a dash between values ('220-260', '234 - 234').
+        List of Values  → ';'- or ','-separated values, regardless of spacing
+                          ('SDF330, DFS340', 'SDF330; DFS340', '50101;10101').
+        Single Value    → a plain scalar ('4', 'MOD', '10501').
     """
     s = _strip_edge_quotes(str(value or "").strip())
 
-    # A dash anywhere → Range of Values; split into the two bounds around the
-    # first dash (guard against a leading/trailing dash leaving an empty side).
+    # A dash → Range of Values; split into the two bounds around the first dash
+    # (guard against a leading/trailing dash leaving an empty side).
     if "-" in s:
         lo, hi = (p.strip() for p in s.split("-", 1))
         if lo and hi:
             return "range", [lo, hi]
 
-    # Otherwise count ';'/','-separated values.
+    # A ';' or ',' separator → List of Values (two or more values).
     parts = [t.strip() for t in re.split(r"[;,]", s) if t.strip()]
-    if len(parts) >= 3:
+    if len(parts) >= 2:
         return "list", parts
-    if len(parts) == 2:
-        return "range", parts
+
     return "single", [s]
 
 
