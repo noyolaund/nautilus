@@ -995,13 +995,15 @@ async def fill_jde_field(page: Page, selector: str, value: str, iframe: str = IF
     locator = frame.locator(selector)
 
     await locator.first.wait_for(state="visible", timeout=5000)
-    # 1. Click to focus
+    # 1. Click to focus, then let focus settle so the first keystrokes aren't
+    #    dropped by JDE's handlers (a cause of truncated values, "BEK501"→"501").
     await locator.first.click()
+    await asyncio.sleep(0.15)
     # 2. Select all + delete to clear
     await page.keyboard.press("Control+a")
     await page.keyboard.press("Delete")
     # 3. Type each character — fires real keyboard events
-    await locator.first.press_sequentially(value, delay=20)
+    await locator.first.press_sequentially(value, delay=30)
     # 4. Brief settle, then Tab to blur and commit
     await asyncio.sleep(0.2)
     await page.keyboard.press("Tab")
@@ -1406,60 +1408,89 @@ async def sync_literal_list_values(
     """
     desired = _split_multi_values(desired_raw)
     desired_norm = {v.lower() for v in desired}
+    print(f"      🔁 litList sync: desired={desired}")
 
-    current = await _read_lit_list_values(page)
-    extras = [c for c in current if c.lower() not in desired_norm]
-    print(
-        f"      🔁 litList sync: desired={desired} current={current} extras={extras}"
-    )
+    async def _delete_extras() -> None:
+        """Delete every #litList value that isn't desired, verifying each one
+        actually left (JDE re-renders after each delete and can drop the
+        selection). Values that refuse to select are parked so one stuck entry
+        can't spin forever."""
+        stuck: set[str] = set()
+        guard = 60
+        while guard > 0:
+            guard -= 1
+            current = await _read_lit_list_values(page)
+            extras = [
+                c for c in current
+                if c.lower() not in desired_norm and c.lower() not in stuck
+            ]
+            if not extras:
+                return
+            extra = extras[0]
+            if not await _select_lit_list_option(page, extra):
+                print(f"      ⚠ Could not select {extra!r} in #litList — skipping delete")
+                stuck.add(extra.lower())
+                continue
+            await asyncio.sleep(0.3)  # let the selection register
+            await runner.click(
+                f"Delete literal {extra!r} (#hc952)",
+                selector="#hc952", iframe=IFRAME, selector_strategy="css",
+            )
+            await asyncio.sleep(0.4)  # let #litList re-render
 
-    # 1. Delete every value that isn't desired, one at a time, RE-READING the
-    #    list each pass and verifying the value actually left before moving on.
-    #    JDE re-renders #litList after each delete (and the selection can be
-    #    dropped by that re-render), so a single fire-and-forget pass can leave
-    #    stale values behind — the bug this loop fixes. Values that refuse to
-    #    select are parked in `failed` so one stuck entry can't spin forever.
-    failed: set[str] = set()
-    guard = len(extras) * 4 + 8
-    while guard > 0:
-        guard -= 1
-        current = await _read_lit_list_values(page)
-        extras = [
-            c for c in current
-            if c.lower() not in desired_norm and c.lower() not in failed
-        ]
-        if not extras:
-            break
-        extra = extras[0]
-        if not await _select_lit_list_option(page, extra):
-            print(f"      ⚠ Could not select {extra!r} in #litList — skipping delete")
-            failed.add(extra.lower())
-            continue
-        await asyncio.sleep(0.3)  # let the selection register before deleting
-        await runner.click(
-            f"Delete literal {extra!r} (#hc952)",
-            selector="#hc952", iframe=IFRAME, selector_strategy="css",
-        )
-        await asyncio.sleep(0.4)  # let #litList re-render after the delete
-
-    # Verify nothing stray survived (excludes values we couldn't select).
-    current = await _read_lit_list_values(page)
-    stray = [c for c in current if c.lower() not in desired_norm]
-    if stray:
-        print(f"      ⚠ litList still contains stray value(s) after delete: {stray}")
-
-    # 2. Add every desired value not already present (re-read post-delete).
-    current_norm = {c.lower() for c in await _read_lit_list_values(page)}
-    missing = [v for v in desired if v.lower() not in current_norm]
-    for value in missing:
+    async def _add_one(value: str) -> bool:
+        """Fill + Add one value, then verify it actually landed. JDE can
+        truncate a typed value ("BEK501"→"501"); if the exact value didn't
+        appear, delete whatever bogus entry did and report failure so the outer
+        loop retries."""
+        before = {c.lower() for c in await _read_lit_list_values(page)}
         await fill_jde_field(page, "#LITtfList", value)
         await runner.click(
             f"Add literal {value!r} (#hc950)",
             selector="#hc950", iframe=IFRAME, selector_strategy="css",
         )
-        await asyncio.sleep(0.2)  # let the row append before the next add
+        await asyncio.sleep(0.3)  # let the row append
+        after = await _read_lit_list_values(page)
+        if any(c.lower() == value.lower() for c in after):
+            return True
+        # The value didn't land correctly — remove any bogus entry it produced
+        # (present now, not before, and not the value we wanted).
+        bogus = [c for c in after if c.lower() not in before and c.lower() != value.lower()]
+        for b in bogus:
+            print(f"      ⚠ {value!r} inserted wrong as {b!r} — deleting it")
+            if await _select_lit_list_option(page, b):
+                await asyncio.sleep(0.2)
+                await runner.click(
+                    f"Delete truncated {b!r} (#hc952)",
+                    selector="#hc952", iframe=IFRAME, selector_strategy="css",
+                )
+                await asyncio.sleep(0.3)
+        return False
 
-    # 3. Commit the panel.
+    # Reconcile: delete wrong values, add the missing ones (verified), and
+    # repeat until #litList equals the Excel list or we run out of passes.
+    MAX_PASSES = 5
+    for _pass in range(1, MAX_PASSES + 1):
+        await _delete_extras()
+        current_norm = {c.lower() for c in await _read_lit_list_values(page)}
+        missing = [v for v in desired if v.lower() not in current_norm]
+        if not missing:
+            break
+        print(f"      🔁 litList pass {_pass}/{MAX_PASSES}: adding missing={missing}")
+        for value in missing:
+            if not await _add_one(value):
+                print(f"      ⚠ {value!r} did not insert correctly — retry next pass")
+
+    final = await _read_lit_list_values(page)
+    final_norm = {c.lower() for c in final}
+    still_missing = [v for v in desired if v.lower() not in final_norm]
+    stray = [c for c in final if c.lower() not in desired_norm]
+    if still_missing or stray:
+        print(f"      ⚠ litList not fully reconciled — missing={still_missing} stray={stray}")
+    else:
+        print(f"      ✓ litList reconciled to {desired}")
+
+    # Commit the panel.
     await runner.click(
         "Select button (#hc_Select)",
         selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
