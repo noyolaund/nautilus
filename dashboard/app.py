@@ -361,19 +361,25 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "_source_row": r["row_index"],
                 })
 
-            # Collect processing options for this report column (rows below
-            # the "PO Tab" separator). Tab = col A, option label = col B,
-            # New Value = this report's column. A blank cell means "do
-            # nothing for this option in this report".
+            # Collect processing options for this report column. Tab = col A,
+            # New Value = this report's column. Values are placed POSITIONALLY:
+            # the Nth row of a tab fills the Nth text box in that JDE tab, so a
+            # blank cell simply skips (leaves untouched) that text box. `position`
+            # (0-based, counting blank rows) is the text-box index within the tab.
             processing_options: list[dict] = []
+            tab_pos: dict[str, int] = {}
             for r in po_rows:
+                tab = r["tab"]
+                pos = tab_pos.get(tab, 0)
+                tab_pos[tab] = pos + 1  # every row consumes a text-box slot
                 val = _cell(r["row"], col_idx0)
                 if val is None or not str(val).strip():
-                    continue
+                    continue  # blank → skip this text box (position already used)
                 processing_options.append({
-                    "tab": r["tab"],
+                    "tab": tab,
                     "option_label": r["option_label"],
                     "processing_new": str(val).strip(),
+                    "position": pos,
                     "_source_row": r["row_index"],
                 })
 

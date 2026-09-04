@@ -723,6 +723,109 @@ def _po_frame_priority(f) -> int:
     return 50
 
 
+async def activate_po_tab(page: Page, runner: StepRunner, tab: str) -> None:
+    """Activate the Processing Options tab named *tab*, whether JDE renders the
+    tabs as a combo box (#jdeWebTabBodynull) or clickable anchor tabs. Raises
+    StepError if the tab can't be found."""
+    combo_status, combo_label, combo_opts = await find_po_tab_combo_option(page, tab)
+    if combo_status == "matched":
+        print(f"      Tab {tab!r} → combo box {PO_TAB_COMBO_SELECTOR} option {combo_label!r}")
+        await runner.select(
+            f"Processing Options tab {tab!r}",
+            value=combo_label,
+            selector=PO_TAB_COMBO_SELECTOR, iframe=IFRAME, selector_strategy="css",
+        )
+    elif combo_status == "no_match":
+        raise StepError(
+            "Select Processing Options tab",
+            f"Tab {tab!r} not found in combo box {PO_TAB_COMBO_SELECTOR}; "
+            f"available: {combo_opts}",
+            None,
+        )
+    else:  # not_present → classic clickable anchor tabs
+        tab_selector = await find_processing_option_tab(page, tab)
+        if not tab_selector:
+            raise StepError(
+                "Find Processing Options tab", f"Could not find tab named {tab!r}", None,
+            )
+        print(f"      Tab matched: {tab_selector}")
+        await runner.click(
+            f"Tab {tab!r}", selector=tab_selector, iframe=IFRAME, selector_strategy="css",
+        )
+
+
+async def read_processing_inputs(page: Page) -> list[str]:
+    """Return the values of the visible/enabled text inputs on the active
+    Processing Options tab, in order (0-based positions) — the same set
+    fill_nth_processing_input targets, so index i here is text box i+1 there."""
+    js = """({ skipFirst }) => {
+        const inputs = document.querySelectorAll(
+            "input[type='text'], input:not([type]), input[type='number']"
+        );
+        const visible = [];
+        for (const el of inputs) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            if (el.disabled || el.readOnly) continue;
+            visible.push(el);
+        }
+        const usable = skipFirst ? visible.slice(1) : visible;
+        return usable.map(el => el.value || '');
+    }"""
+    for frame in sorted(page.frames, key=_po_frame_priority):
+        skip_first = _po_frame_priority(frame) != 0
+        try:
+            res = await frame.evaluate(js, {"skipFirst": skip_first})
+        except Exception:
+            continue
+        if res:
+            return res
+    return []
+
+
+async def verify_and_fix_po_tab(
+    page: Page, runner: StepRunner, tab: str, entries: list[dict],
+) -> list[str]:
+    """Verify the active tab's text boxes match the Excel values (by position)
+    and re-fill any mismatch, retrying until equal or passes run out.
+
+    Returns the remaining discrepancy messages (empty if fully reconciled)."""
+    expected = {
+        int(po.get("position", 0)): str(po.get("processing_new", "")).strip()
+        for po in entries if str(po.get("processing_new", "")).strip()
+    }
+    MAX_PASSES = 4
+    for _pass in range(1, MAX_PASSES + 1):
+        inputs = await read_processing_inputs(page)
+        mismatches = [
+            (pos, exp, (inputs[pos] if pos < len(inputs) else None))
+            for pos, exp in sorted(expected.items())
+            if pos >= len(inputs) or _norm_ws(inputs[pos]) != _norm_ws(exp)
+        ]
+        if not mismatches:
+            print(f"      ✓ PO tab {tab!r} verified ({len(expected)} field(s))")
+            return []
+        print(
+            f"      🔁 PO tab {tab!r} pass {_pass}/{MAX_PASSES}: "
+            f"{len(mismatches)} mismatch(es), re-filling"
+        )
+        for pos, exp, got in mismatches:
+            if pos >= len(inputs):
+                continue  # no text box at this position — can't fill
+            try:
+                await fill_nth_processing_input(page, pos + 1, exp)
+            except Exception as exc:
+                print(f"      ⚠ could not re-fill text box #{pos + 1}: {exc}")
+
+    inputs = await read_processing_inputs(page)
+    diffs = []
+    for pos, exp in sorted(expected.items()):
+        got = inputs[pos] if pos < len(inputs) else None
+        if got is None or _norm_ws(got) != _norm_ws(exp):
+            diffs.append(f"tab {tab!r} text box #{pos + 1}: expected {exp!r} but JDE has {got!r}")
+    return diffs
+
+
 async def _type_into_marked_input(
     page: Page,
     selected_frame,
@@ -2558,7 +2661,11 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 except Exception:
                     pass
 
-        # --- Processing Options -- loop once per entry
+        # --- Processing Options — filled POSITIONALLY, one tab at a time ────
+        # The number of PO rows for a tab equals the number of text boxes in
+        # that JDE tab, so each row maps to a text box by position (blank rows
+        # skip a box). We fill a whole tab, then re-read and reconcile it
+        # against the Excel values before moving to the next tab.
         if processing_options:
             print(f"[{label}] Configuring {len(processing_options)} processing option(s)")
             await runner.click("Row Menu", selector=row_menu_selector, iframe=IFRAME, selector_strategy="css")
@@ -2566,93 +2673,59 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
             # Wait for the Processing Options dialog to fully render its tabs
             await asyncio.sleep(2)
 
-            # Track the currently-active tab so we only (re)activate it when it
-            # changes. Re-clicking an anchor tab resets values already written
-            # on it, so consecutive options on the same tab must NOT re-click.
-            current_tab: Optional[str] = None
-
-            for idx, po in enumerate(processing_options, 1):
+            # Group PO entries by tab, preserving first-seen tab order.
+            tabs_in_order: list[str] = []
+            by_tab: dict[str, list[dict]] = {}
+            for po in processing_options:
                 tab = po.get("tab", "")
-                # Column B — the option's label text, searched in JDE to find
-                # the text box. Legacy rows may carry a bare option number
-                # under "option_number" instead.
-                option_label = str(
-                    po.get("option_label") or po.get("option_number") or ""
-                ).strip()
-                processing_value = po.get("processing_new", "")
-                print(f"[{label}]   PO {idx}: tab={tab!r}, option={option_label!r}, value={processing_value!r}")
+                if tab not in by_tab:
+                    by_tab[tab] = []
+                    tabs_in_order.append(tab)
+                by_tab[tab].append(po)
 
-                # A blank Excel cell means "do nothing for this option in
-                # this report column".
-                if not str(processing_value).strip():
-                    print(f"[{label}]   ↳ empty value, skipping")
-                    continue
-                if not option_label:
-                    print(f"[{label}]   ↳ no option label, skipping")
-                    continue
-
+            for tab in tabs_in_order:
+                entries = by_tab[tab]
+                print(f"[{label}]   PO tab {tab!r}: {len(entries)} value(s)")
                 try:
-                    # 1. Activate the tab — but only if it differs from the one
-                    #    already active. Re-activating the same tab re-renders it
-                    #    and resets values written on it, so consecutive options
-                    #    sharing a tab must not re-click/re-select. Works for both
-                    #    the combo box (#jdeWebTabBodynull) and clickable anchor
-                    #    tabs.
-                    if tab and _norm_ws(tab).lower() == current_tab:
-                        print(f"      Tab {tab!r} already active — not re-activating")
-                    elif tab:
-                        combo_status, combo_label, combo_opts = (
-                            await find_po_tab_combo_option(page, tab)
-                        )
-                        if combo_status == "matched":
-                            print(
-                                f"      Tab {tab!r} → combo box "
-                                f"{PO_TAB_COMBO_SELECTOR} option {combo_label!r}"
-                            )
-                            await runner.select(
-                                f"Processing Options tab {tab!r}",
-                                value=combo_label,
-                                selector=PO_TAB_COMBO_SELECTOR,
-                                iframe=IFRAME, selector_strategy="css",
-                            )
-                        elif combo_status == "no_match":
-                            raise StepError(
-                                "Select Processing Options tab",
-                                f"Tab {tab!r} not found in combo box "
-                                f"{PO_TAB_COMBO_SELECTOR}; available: {combo_opts}",
-                                None,
-                            )
-                        else:  # not_present → classic clickable anchor tabs
-                            tab_selector = await find_processing_option_tab(page, tab)
-                            if not tab_selector:
-                                raise StepError(
-                                    "Find Processing Options tab",
-                                    f"Could not find tab named {tab!r}",
-                                    None,
-                                )
-                            print(f"      Tab matched: {tab_selector}")
-                            await runner.click(
-                                f"Tab {tab!r}",
-                                selector=tab_selector, iframe=IFRAME, selector_strategy="css",
-                            )
-                        current_tab = _norm_ws(tab).lower()
-                        # Give the tab content time to render
+                    # 1. Activate the tab and let its controls render.
+                    if tab:
+                        await activate_po_tab(page, runner, tab)
                         await asyncio.sleep(1)
 
-                    # 2. Fill this option's text box — located by searching the
-                    # label text, falling back to its leading option number.
-                    await fill_processing_option(page, option_label, processing_value)
+                    # 2. Fill each value into its text box by position (position
+                    #    N -> the (N+1)-th text box; blank rows were never
+                    #    emitted, so their boxes are left untouched).
+                    for po in entries:
+                        pos = int(po.get("position", 0))
+                        value = str(po.get("processing_new", "")).strip()
+                        if not value:
+                            continue
+                        print(f"[{label}]     - text box #{pos + 1} <- {value!r}")
+                        await fill_nth_processing_input(page, pos + 1, value)
+
+                    # 3. Verify the tab and re-fill any mismatch until equal.
+                    diffs = await verify_and_fix_po_tab(page, runner, tab, entries)
+                    if diffs:
+                        for d in diffs:
+                            print(f"[{label}]   -> FAIL {d}")
+                            runner.record_failure(f"Processing Option tab {tab}", d)
+                            field_errors.append(d)
+                        await _diagnostic_screenshot(
+                            page,
+                            f"jde_po_verify_{report.get('app_report', 'unknown')}"
+                            f"_{_norm_ws(tab).replace(' ', '_')}",
+                        )
                 except Exception as po_err:
-                    # The field wasn't found / couldn't be written (e.g. a
-                    # label absent on this tab). Record it so the dashboard
-                    # and report surface it, then continue with the rest of
-                    # the Processing Options instead of aborting the run.
-                    msg = f"{option_label}: {po_err}"
-                    print(f"[{label}]   ↳ ✖ {msg} — leaving option unchanged")
-                    runner.record_failure(f"Processing Option: {option_label}", str(po_err))
+                    # The tab couldn't be activated / filled. Record it and
+                    # continue with the remaining tabs.
+                    msg = f"PO tab {tab}: {po_err}"
+                    print(f"[{label}]   -> FAIL {msg} - continuing with the next tab")
+                    runner.record_failure(f"Processing Option tab {tab}", str(po_err))
                     field_errors.append(msg)
                     await _diagnostic_screenshot(
-                        page, f"jde_po_fail_{report.get('app_report', 'unknown')}_{idx}"
+                        page,
+                        f"jde_po_fail_{report.get('app_report', 'unknown')}"
+                        f"_{_norm_ws(tab).replace(' ', '_')}",
                     )
                     continue
 
