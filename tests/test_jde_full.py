@@ -49,6 +49,11 @@ _ADD_ROW_SETTLE_S = float(os.getenv("JDE_ADD_ROW_SETTLE_S", "1.5"))
 # type into them.
 _LITERAL_TAB_SETTLE_S = float(os.getenv("JDE_LITERAL_TAB_SETTLE_S", "0.8"))
 
+# Settle after committing the Literal editor (#hc_Select). JDE reloads the Data
+# Selection grid, so wait before the caller touches #Select{N} again (re-lock
+# or the next field's lock check) — otherwise the row isn't found yet.
+_LITERAL_COMMIT_SETTLE_S = float(os.getenv("JDE_LITERAL_COMMIT_SETTLE_S", "0.9"))
+
 
 def _run_screenshot_path(name: str) -> str:
     """Resolve an error-screenshot path inside the current run's screenshots
@@ -1481,19 +1486,19 @@ async def write_literal_by_active_tab(
             "Select button", selector="#hc_Select",
             iframe=IFRAME, selector_strategy="css",
         )
-        return
-
-    if shape == "list":
+    elif shape == "list":
         # sync_literal_list_values itself clicks #hc_Select as its final commit.
         await sync_literal_list_values(page, runner, str(value))
-        return
+    else:  # Single Value.
+        await fill_jde_field(page, "#LITtf", tokens[0])
+        await runner.click(
+            "Select button", selector="#hc_Select",
+            iframe=IFRAME, selector_strategy="css",
+        )
 
-    # Single Value.
-    await fill_jde_field(page, "#LITtf", tokens[0])
-    await runner.click(
-        "Select button", selector="#hc_Select",
-        iframe=IFRAME, selector_strategy="css",
-    )
+    # The Literal commit reloads the DS grid — let it finish re-rendering before
+    # the caller touches #Select{N} again (re-lock / next field's lock check).
+    await asyncio.sleep(_LITERAL_COMMIT_SETTLE_S)
 
 
 async def sync_literal_list_values(
