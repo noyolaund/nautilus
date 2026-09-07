@@ -156,7 +156,8 @@ def _po_label_first_segment(text: str) -> str:
 #
 # Every extracted Data Selection value is classified into an edit *behavior*:
 #
-#   "remove"    → delete the matching row (REMOVE and "Blank" both map here)
+#   "remove"    → delete the matching row (Excel value "REMOVE")
+#   "blank"     → select the "Blank" option in the Right Operand combo box
 #   "zero"      → select the "Zero" option in the Right Operand combo box
 #   "null"      → select the "Null" option in the Right Operand combo box
 #   "datetoday" → select the "DateToday [SL]" option in the Right Operand combo
@@ -181,8 +182,10 @@ def classify_ds_behavior(value: str) -> str:
     # Strip one surrounding pair of angle brackets: "<Zero>" -> "Zero".
     token = re.sub(r"^<\s*(.+?)\s*>$", r"\1", v).strip()
     low = token.lower()
-    if token.upper() == "REMOVE" or low == "blank":
+    if token.upper() == "REMOVE":
         return "remove"
+    if low == "blank":
+        return "blank"
     if low == "zero":
         return "zero"
     if low == "null":

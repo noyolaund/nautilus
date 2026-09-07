@@ -1615,6 +1615,7 @@ _RIGHT_OPERAND_SENTINELS: set[str] = {
 # (no Literal editor) — maps the parsed behavior string to the exact option
 # text JDE renders in the dropdown.
 _RIGHT_OPERAND_OPTION: dict[str, str] = {
+    "blank": "Blank",
     "zero": "Zero",
     "null": "Null",
     "datetoday": "DateToday [SL]",
