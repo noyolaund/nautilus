@@ -128,6 +128,22 @@ def resolve_comparison(raw: str) -> str:
     return COMPARISON_MAP.get(key, str(raw).strip())
 
 
+def _comparison_key(s: str) -> str:
+    """Core comparison text used for matching, tolerant of the leading 'is' and
+    trailing 'to' the Excel file may omit:
+
+        'is less than or equal to'  → 'less than or equal'
+        'less than or equal'        → 'less than or equal'
+        'is equal to' / 'equal'     → 'equal'
+
+    So an Excel value missing the 'to' still matches JDE's full phrase.
+    """
+    core = _norm_ws(s).lower()
+    core = re.sub(r"^is\b\s*", "", core)
+    core = re.sub(r"\s*\bto$", "", core)
+    return core.strip()
+
+
 # ---------------------------------------------------------------------------
 # Login flow (used when running standalone)
 # ---------------------------------------------------------------------------
@@ -1723,6 +1739,44 @@ async def read_locked_right_operand_text(
     return None
 
 
+async def read_row_comparison(page: Page, row_number) -> Optional[str]:
+    """Return the current Comparison text of Data Selection row N — the selected
+    #Comparison{N} option for an unlocked row, or the Comparison column's
+    StaticText for a locked row. None if the row can't be found."""
+    js = """(n) => {
+        const norm = (s) => (s || '').split(/[\\s\\u00A0]+/).filter(Boolean).join(' ');
+        const sel = document.querySelector('#Comparison' + n);
+        if (sel) {
+            const o = sel.options[sel.selectedIndex];
+            return { value: norm(o ? (o.textContent || o.value || '') : '') };
+        }
+        // Locked row: Comparison is the column right after Left Operand.
+        const cb = document.querySelector('#Select' + n);
+        if (!cb) return null;
+        const tr = cb.closest('tr'); if (!tr) return null;
+        const scope = document.querySelector('#jdeGrid') || document;
+        let leftCol = -1;
+        const lo = scope.querySelector("select[id^='LeftOperand']");
+        if (lo) { const td = lo.closest('td');
+            if (td) leftCol = Array.prototype.indexOf.call(td.parentElement.children, td); }
+        const compCol = leftCol >= 0 ? leftCol + 1 : -1;
+        if (compCol >= 0 && tr.children[compCol]) {
+            const cell = tr.children[compCol];
+            const span = cell.querySelector('span.StaticText, .StaticText');
+            return { value: norm(span ? span.textContent : cell.textContent) };
+        }
+        return null;
+    }"""
+    for frame in page.frames:
+        try:
+            result = await frame.evaluate(js, str(row_number))
+        except Exception:
+            continue
+        if result is not None:
+            return result.get("value") or ""
+    return None
+
+
 def _tokenize_multi_value(raw: str) -> set[str]:
     """Split a comma/semicolon list into a normalized set for order-insensitive
     comparison (used for multi-value Left Operands like Order Type). Surrounding
@@ -1813,7 +1867,7 @@ async def verify_data_selection_result(
     remaining = [
         {
             "left_n": _clean_operand_for_match(a.get("left", "")),
-            "comp_n": _norm_ws(a.get("comparison", "")).lower(),
+            "comp_n": _comparison_key(a.get("comparison", "")),
             "right": a.get("right", ""),
             "raw": a,
         }
@@ -1823,7 +1877,7 @@ async def verify_data_selection_result(
     diffs: list[str] = []
     for sel in expected:
         want_left = _clean_operand_for_match(sel.get("left_operand", ""))
-        want_comp = resolve_comparison(sel.get("comparison", "")).strip().lower()
+        want_comp = _comparison_key(resolve_comparison(sel.get("comparison", "")))
         want_right = _expected_right_operand(sel)
         is_multi = sel.get("left_operand", "").strip().lower() in MULTI_VALUE_LEFT_OPERANDS
         beh = sel.get("behavior", "literal")
@@ -2064,17 +2118,21 @@ async def select_comparison_by_text(
         print(f"        ✖ #Comparison{row_number} has no options to select")
         return False
 
-    want = _norm_ws(desired_text).lower()
+    # Match on the core key ('is'/'to' stripped) so an Excel value missing the
+    # trailing 'to' still selects the full JDE phrase; also accept a raw value
+    # (coded) match.
+    want_core = _comparison_key(desired_text)
+    want_raw = _norm_ws(desired_text).lower()
     best = None
     best_score = -1.0
     for o in options:
-        t = _norm_ws(o["text"]).lower()
+        t_core = _comparison_key(o["text"])
         v = _norm_ws(o["value"]).lower()
-        if want and (t == want or v == want):
+        if (want_core and t_core == want_core) or (v and v == want_raw):
             best, best_score = o, 2.0
             break
-        score = difflib.SequenceMatcher(None, want, t).ratio()
-        if want and want in t:
+        score = difflib.SequenceMatcher(None, want_core, t_core).ratio()
+        if want_core and want_core in t_core:
             score = max(score, 0.9)
         if score > best_score:
             best, best_score = o, score
@@ -2482,44 +2540,59 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     if row_number:
                         row_is_locked = await is_data_selection_row_locked(page, row_number)
 
-                    # Pre-edit check: read the current Right Operand value and skip
-                    # when the row is already in the desired state — no unlock /
-                    # edit / re-lock churn needed. "remove" always goes through.
-                    # Locked rows have no #RightOperand{N} select, so their value
-                    # is read from the column-4 StaticText instead.
+                    # Pre-edit check: read the current Right Operand value AND
+                    # Comparison, and skip only when BOTH already match — no
+                    # unlock / edit / re-lock churn needed. "remove" always goes
+                    # through. Locked rows have no #RightOperand{N} select, so
+                    # their value is read from the column-4 StaticText instead.
+                    comp_ok = True  # whether JDE's comparison already matches Excel
                     if behavior != "remove" and row_number:
                         if row_is_locked:
                             current_right = await read_locked_right_operand_text(page, row_number)
                         else:
                             current_right = await read_right_operand_selected_text(page, row_number)
+
+                        # Comparison match (tolerant of the 'is'/'to' the Excel
+                        # file may omit).
+                        current_comparison = await read_row_comparison(page, row_number)
+                        want_comparison = resolve_comparison(comparison_value)
+                        comp_ok = _comparison_key(current_comparison or "") == _comparison_key(want_comparison)
+
                         if behavior in _RIGHT_OPERAND_OPTION:
                             option_text = _RIGHT_OPERAND_OPTION[behavior]
-                            if (current_right or "").strip().lower() == option_text.lower():
-                                print(
-                                    f"[{label}]   ↳ Right Operand already "
-                                    f"{option_text!r} — skipping"
-                                )
-                                continue
-                            print(
-                                f"[{label}]   ↳ setting Right Operand to "
-                                f"{option_text!r}"
-                            )
+                            right_ok = (current_right or "").strip().lower() == option_text.lower()
                         else:  # literal
                             is_multi = left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS
-                            if right_operand_matches_excel(current_right, data_value, is_multi):
-                                print(
-                                    f"[{label}]   ↳ current value {current_right!r} already "
-                                    f"matches Excel {data_value!r} — skipping"
-                                )
-                                continue
+                            right_ok = right_operand_matches_excel(current_right, data_value, is_multi)
+
+                        if right_ok and comp_ok:
                             print(
-                                f"[{label}]   ↳ current JDE value {current_right!r} differs "
-                                f"from Excel {data_value!r} — will edit"
+                                f"[{label}]   ↳ Right Operand {current_right!r} and "
+                                f"comparison {current_comparison!r} already match — skipping"
                             )
+                            continue
+                        print(
+                            f"[{label}]   ↳ will edit (right_ok={right_ok}, "
+                            f"comp_ok={comp_ok}; JDE comparison={current_comparison!r})"
+                        )
 
                     # Unlock if needed so the next steps can mutate the row.
                     if row_is_locked and row_number:
                         await unlock_data_selection_row(runner, row_number)
+
+                    # Set the Comparison for the existing row when it differs
+                    # (skipped for "remove", which deletes the row). Selecting it
+                    # fires onchange="FilterRightOp(N)", which re-renders the
+                    # Right Operand, so do this BEFORE setting the Right Operand.
+                    if behavior != "remove" and row_number and comparison_value and not comp_ok:
+                        resolved = resolve_comparison(comparison_value)
+                        print(f"[{label}]   ↳ setting Comparison to {resolved!r}")
+                        if not await select_comparison_by_text(page, row_number, resolved):
+                            msg = f"{left_operand}: could not set comparison {resolved!r}"
+                            print(f"[{label}]   ↳ ✖ {msg}")
+                            runner.record_failure(f"Data Selection: {left_operand}", msg)
+                            field_errors.append(msg)
+                        await asyncio.sleep(_ADD_ROW_SETTLE_S)  # let RightOperand re-render
 
                     # ── REMOVE branch (REMOVE / Blank) ───────────────────────
                     # Mark the matching row's checkbox and click Delete instead of
