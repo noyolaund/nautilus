@@ -1605,14 +1605,31 @@ async def sync_literal_list_values(
             if not await _add_one(value):
                 print(f"      ⚠ {value!r} did not insert correctly — retry next pass")
 
-    final = await _read_lit_list_values(page)
-    final_norm = {c.lower() for c in final}
-    still_missing = [v for v in desired if v.lower() not in final_norm]
-    stray = [c for c in final if c.lower() not in desired_norm]
+    # Final loop check (limit 3): after the insert/remove process, reconcile
+    # until #litList EXACTLY equals the Excel list — no missing AND no stray —
+    # before committing. This catches a stray produced by the last add (which
+    # the main loop's "no missing" break would otherwise leave behind).
+    still_missing: list[str] = []
+    stray: list[str] = []
+    for _check in range(1, 4):
+        current = await _read_lit_list_values(page)
+        current_norm = {c.lower() for c in current}
+        still_missing = [v for v in desired if v.lower() not in current_norm]
+        stray = [c for c in current if c.lower() not in desired_norm]
+        if not still_missing and not stray:
+            print(f"      ✓ litList final check {_check}/3: matches Excel {desired}")
+            break
+        print(
+            f"      🔁 litList final check {_check}/3: "
+            f"missing={still_missing} stray={stray} — reconciling"
+        )
+        await _delete_extras()                 # remove stray values
+        for value in still_missing:            # add the missing values
+            if not await _add_one(value):
+                print(f"      ⚠ {value!r} still did not insert correctly")
+
     if still_missing or stray:
         print(f"      ⚠ litList not fully reconciled — missing={still_missing} stray={stray}")
-    else:
-        print(f"      ✓ litList reconciled to {desired}")
 
     # Commit the panel.
     await runner.click(
