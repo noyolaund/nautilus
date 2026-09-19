@@ -1605,36 +1605,66 @@ async def sync_literal_list_values(
             if not await _add_one(value):
                 print(f"      ⚠ {value!r} did not insert correctly — retry next pass")
 
-    # Final loop check (limit 3): after the insert/remove process, reconcile
-    # until #litList EXACTLY equals the Excel list — no missing AND no stray —
-    # before committing. This catches a stray produced by the last add (which
-    # the main loop's "no missing" break would otherwise leave behind).
-    still_missing: list[str] = []
-    stray: list[str] = []
-    for _check in range(1, 4):
-        current = await _read_lit_list_values(page)
-        current_norm = {c.lower() for c in current}
-        still_missing = [v for v in desired if v.lower() not in current_norm]
-        stray = [c for c in current if c.lower() not in desired_norm]
-        if not still_missing and not stray:
-            print(f"      ✓ litList final check {_check}/3: matches Excel {desired}")
-            break
-        print(
-            f"      🔁 litList final check {_check}/3: "
-            f"missing={still_missing} stray={stray} — reconciling"
-        )
-        await _delete_extras()                 # remove stray values
-        for value in still_missing:            # add the missing values
-            if not await _add_one(value):
-                print(f"      ⚠ {value!r} still did not insert correctly")
-
+    final = await _read_lit_list_values(page)
+    final_norm = {c.lower() for c in final}
+    still_missing = [v for v in desired if v.lower() not in final_norm]
+    stray = [c for c in final if c.lower() not in desired_norm]
     if still_missing or stray:
         print(f"      ⚠ litList not fully reconciled — missing={still_missing} stray={stray}")
+    else:
+        print(f"      ✓ litList reconciled to {desired}")
 
-    # Commit the panel.
+    # Commit the panel. The caller verifies the committed grid value and
+    # re-syncs if it doesn't match (see verify_list_literal_committed).
     await runner.click(
         "Select button (#hc_Select)",
         selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+    )
+
+
+async def verify_list_literal_committed(
+    page: Page, runner: StepRunner, right_operand_sel: str, row_number: str,
+    desired_raw: str, label: str,
+) -> tuple[bool, str]:
+    """After a List-of-Values literal is committed, read the ACTUAL committed
+    Right Operand value from the grid and compare it to the Excel list.
+
+    Reading #litList before commit doesn't prove what JDE actually stored, so
+    for large lists values can silently drop. Here we read the committed value
+    (#RightOperand{N}'s selected option holds the full list) and, if it doesn't
+    match, re-open the Literal editor and re-sync — up to 3 attempts total.
+    Returns (ok, error_message).
+    """
+    want = _tokenize_multi_value(desired_raw)
+    committed = None
+    for attempt in range(1, 4):
+        committed = await read_right_operand_selected_text(page, row_number)
+        if right_operand_matches_excel(committed, desired_raw, is_multi_value=True):
+            print(f"[{label}]   ↳ ✓ List of Values verified (attempt {attempt}/3)")
+            return True, ""
+        cur = _tokenize_multi_value(committed or "")
+        print(
+            f"[{label}]   ↳ ⚠ List mismatch (attempt {attempt}/3): "
+            f"missing={sorted(want - cur)} extra={sorted(cur - want)}"
+        )
+        if attempt >= 3:
+            break
+        # Re-open the Literal editor on this row and re-sync the list.
+        await runner.select(
+            "Right Operand dropdown (re-open Literal)", value="Literal",
+            selector=right_operand_sel, iframe=IFRAME, selector_strategy="css",
+        )
+        await asyncio.sleep(_LITERAL_TAB_SETTLE_S)
+        if not await click_literal_tab(page, runner, "List of Values"):
+            return False, "could not re-open the 'List of Values' tab to re-sync"
+        await asyncio.sleep(_LITERAL_TAB_SETTLE_S)
+        await sync_literal_list_values(page, runner, desired_raw)  # commits
+        await asyncio.sleep(_LITERAL_COMMIT_SETTLE_S)
+
+    cur = _tokenize_multi_value(committed or "")
+    return False, (
+        f"List of Values not equal after 3 attempts — "
+        f"missing={sorted(want - cur)} extra={sorted(cur - want)}"
     )
 
 
@@ -2692,6 +2722,24 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         if row_is_locked and row_number:
                             await lock_data_selection_row(runner, row_number)
                         continue
+
+                    # For a List of Values literal, verify the COMMITTED grid
+                    # value equals the Excel list and re-open/re-sync (up to 3x)
+                    # if not — large lists can silently drop values on commit.
+                    # Done while the row is still unlocked (before re-lock).
+                    if row_number and _classify_literal_value(str(data_value))[0] == "list":
+                        ok, verr = await verify_list_literal_committed(
+                            page, runner, right_operand_sel, row_number,
+                            str(data_value), label,
+                        )
+                        if not ok:
+                            msg = f"{left_operand}: {verr}"
+                            print(f"[{label}]   ↳ ✖ {msg}")
+                            runner.record_failure(f"Data Selection: {left_operand}", verr)
+                            field_errors.append(msg)
+                            await _diagnostic_screenshot(
+                                page, f"jde_ds_list_verify_{report.get('app_report', 'unknown')}_{idx}"
+                            )
 
                     # Restore the lock state — only for the edit branch.
                     # (REMOVE already `continue`d above.)
