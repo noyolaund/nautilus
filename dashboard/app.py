@@ -742,8 +742,13 @@ def create_dashboard_app() -> FastAPI:
     # --- Execution endpoints ------------------------------------------------
 
     @app.post("/api/execute")
-    async def execute_all():
-        """Run iterations: each report group runs the JDE Full Path Python flow."""
+    async def execute_all(request: Request):
+        """Run iterations: each report group runs the JDE Full Path Python flow.
+
+        Optional JSON body: {"disable_overwrite": bool} — the dashboard's
+        "Disable overwriting of values" checkbox. When true, the Address Number
+        - Ship To List of Values is only appended to (no compare, no delete).
+        """
         global _execution_results
         import time
         import asyncio as _asyncio
@@ -753,6 +758,13 @@ def create_dashboard_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="Not logged in. Run login first.")
         if not _report_groups:
             raise HTTPException(status_code=400, detail="No data loaded. Load Excel first.")
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        disable_overwrite = bool((body or {}).get("disable_overwrite", False))
+        print(f"[exec] Disable overwriting of values: {'ON' if disable_overwrite else 'OFF'}")
 
         _execution_results = []
         total = len(_report_groups)
@@ -819,6 +831,7 @@ def create_dashboard_app() -> FastAPI:
             iter_num = i + 1
             use_modify = i in modify_indices
             run_group = _to_modify_group(group) if use_modify else group
+            run_group = {**run_group, "disable_overwrite": disable_overwrite}
             report = run_group["report"]
             label = (f"{report.get('app_report', '?')} → "
                      f"{report.get('new_version') or report.get('current_version', '?')}")

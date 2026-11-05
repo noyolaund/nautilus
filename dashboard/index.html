@@ -113,6 +113,15 @@ td{padding:6px 10px;border-top:1px solid var(--border)}
             <table id="data-table"><thead></thead><tbody></tbody></table>
         </div>
     </div>
+    <div style="margin-top:1rem">
+        <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer">
+            <input type="checkbox" id="disable-overwrite">
+            Disable overwriting of values
+        </label>
+        <p style="font-size:.75rem;color:var(--muted);margin:.25rem 0 0 1.6rem">
+            Only for <strong>Address Number - Ship To</strong>: adds each Excel value to JDE's List of Values without comparing or deleting existing values.
+        </p>
+    </div>
 </div>
 
 <!-- Step 3: Execute -->
@@ -439,7 +448,13 @@ async function executeAll() {
     document.getElementById('exec-status').textContent = 'Processing all iterations...';
 
     try {
-        const res = await fetch(API + '/api/execute', {method:'POST'});
+        const res = await fetch(API + '/api/execute', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+                disable_overwrite: document.getElementById('disable-overwrite').checked
+            })
+        });
         const data = await res.json();
 
         document.getElementById('exec-progress').classList.add('hidden');

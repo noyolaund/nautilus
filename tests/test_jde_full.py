@@ -1176,6 +1176,33 @@ MULTI_VALUE_LEFT_OPERANDS: set[str] = {
     "order type",
 }
 
+# Left Operands eligible for the dashboard's "Disable overwriting of values"
+# mode: their List of Values is only ever ADDED to (never compared/reconciled,
+# never deleted from). Matched on the cleaned operand name.
+APPEND_ONLY_LEFT_OPERANDS: set[str] = {
+    "address number - ship to",
+}
+
+
+def is_append_only_operand(left_operand: str) -> bool:
+    """True if *left_operand* is a field the append-only ("Disable overwriting
+    of values") mode applies to — currently only 'Address Number - Ship To'."""
+    return _clean_operand_for_match(left_operand) in APPEND_ONLY_LEFT_OPERANDS
+
+
+def use_append_only(disable_overwrite: bool, left_operand: str,
+                    behavior: str, value: str) -> bool:
+    """Whether a Data Selection field goes through the append-only List of
+    Values flow: the mode is ON, the field is Address Number - Ship To, it's a
+    literal, and the Excel value is classified as a list (';'/','-separated).
+    A single value or an 'A - B' range still goes to Single Value / Range of
+    Values as usual."""
+    return (
+        disable_overwrite and behavior == "literal"
+        and is_append_only_operand(left_operand)
+        and _classify_literal_value(str(value))[0] == "list"
+    )
+
 
 def _split_multi_values(raw: str) -> list[str]:
     """Split a comma/semicolon-separated Excel value into a de-duplicated,
@@ -1461,7 +1488,7 @@ def _literal_tab_type_error(active_tab: Optional[str], value: str) -> Optional[s
 
 
 async def write_literal_by_active_tab(
-    page: Page, runner: StepRunner, value: str,
+    page: Page, runner: StepRunner, value: str, append_only: bool = False,
 ) -> None:
     """Write *value* into the Literal editor, choosing the tab from the value's
     shape — NOT from whichever tab happens to be active — then commit.
@@ -1477,6 +1504,10 @@ async def write_literal_by_active_tab(
     ``#hc_Select`` commits (the List flow commits inside sync). If the tab can't
     be found/clicked, LiteralTabNotDetected is raised so the caller records it
     and moves on.
+
+    *append_only* ("Disable overwriting of values" mode): when the value is
+    classified as a list, only ADD the Excel values (append_literal_list_values) —
+    no comparison, no deletes. Single / range values are written as usual.
     """
     shape, tokens = _classify_literal_value(value)
     tab_name = {
@@ -1502,6 +1533,9 @@ async def write_literal_by_active_tab(
             "Select button", selector="#hc_Select",
             iframe=IFRAME, selector_strategy="css",
         )
+    elif shape == "list" and append_only:
+        # append_literal_list_values itself clicks #hc_Select as its final commit.
+        await append_literal_list_values(page, runner, str(value))
     elif shape == "list":
         # sync_literal_list_values itself clicks #hc_Select as its final commit.
         await sync_literal_list_values(page, runner, str(value))
@@ -1515,6 +1549,80 @@ async def write_literal_by_active_tab(
     # The Literal commit reloads the DS grid — let it finish re-rendering before
     # the caller touches #Select{N} again (re-lock / next field's lock check).
     await asyncio.sleep(_LITERAL_COMMIT_SETTLE_S)
+
+
+async def _add_lit_list_value(page: Page, runner: StepRunner, value: str) -> bool:
+    """Fill + Add one value, then verify it actually landed. JDE can
+    truncate a typed value ("BEK501"→"501"); if the exact value didn't
+    appear, delete whatever bogus entry did and report failure so the outer
+    loop retries."""
+    before = {c.lower() for c in await _read_lit_list_values(page)}
+    await fill_jde_field(page, "#LITtfList", value)
+    await runner.click(
+        f"Add literal {value!r} (#hc950)",
+        selector="#hc950", iframe=IFRAME, selector_strategy="css",
+    )
+    await asyncio.sleep(0.3)  # let the row append
+    after = await _read_lit_list_values(page)
+    if any(c.lower() == value.lower() for c in after):
+        return True
+    # The value didn't land correctly — remove any bogus entry it produced
+    # (present now, not before, and not the value we wanted).
+    bogus = [c for c in after if c.lower() not in before and c.lower() != value.lower()]
+    for b in bogus:
+        print(f"      ⚠ {value!r} inserted wrong as {b!r} — deleting it")
+        if await _select_lit_list_option(page, b):
+            await asyncio.sleep(0.2)
+            await runner.click(
+                f"Delete truncated {b!r} (#hc952)",
+                selector="#hc952", iframe=IFRAME, selector_strategy="css",
+            )
+            await asyncio.sleep(0.3)
+    return False
+
+
+async def append_literal_list_values(
+    page: Page, runner: StepRunner, desired_raw: str,
+) -> list[str]:
+    """Append-only variant of sync_literal_list_values, used by the dashboard's
+    "Disable overwriting of values" mode (Address Number - Ship To only).
+
+    No reconciliation: JDE's current #litList is NOT compared to Excel and
+    nothing already in it is deleted. Each Excel value is added via
+    #LITtfList + #hc950 (Add); a value already in the list is not added a
+    second time. Each add is checked and retried up to 3x (JDE can truncate a
+    typed value). Finally #hc_Select commits the panel.
+
+    Returns the Excel values that could not be added.
+    """
+    desired = _split_multi_values(desired_raw)
+    print(f"      ➕ litList append-only (no overwrite): adding {desired}")
+
+    failed: list[str] = []
+    for value in desired:
+        current = {c.lower() for c in await _read_lit_list_values(page)}
+        if value.lower() in current:
+            print(f"      ↳ {value!r} already in list — not added again")
+            continue
+        for attempt in range(1, 4):
+            if await _add_lit_list_value(page, runner, value):
+                break
+            print(f"      ⚠ {value!r} did not insert correctly (attempt {attempt}/3)")
+        else:
+            failed.append(value)
+
+    if failed:
+        print(f"      ⚠ litList append-only: could not add {failed}")
+    else:
+        print(f"      ✓ litList append-only: all {len(desired)} value(s) present")
+
+    # Commit the panel. The caller verifies the committed grid value
+    # (see verify_list_literal_appended).
+    await runner.click(
+        "Select button (#hc_Select)",
+        selector="#hc_Select", iframe=IFRAME, selector_strategy="css",
+    )
+    return failed
 
 
 async def sync_literal_list_values(
@@ -1562,35 +1670,6 @@ async def sync_literal_list_values(
             )
             await asyncio.sleep(0.4)  # let #litList re-render
 
-    async def _add_one(value: str) -> bool:
-        """Fill + Add one value, then verify it actually landed. JDE can
-        truncate a typed value ("BEK501"→"501"); if the exact value didn't
-        appear, delete whatever bogus entry did and report failure so the outer
-        loop retries."""
-        before = {c.lower() for c in await _read_lit_list_values(page)}
-        await fill_jde_field(page, "#LITtfList", value)
-        await runner.click(
-            f"Add literal {value!r} (#hc950)",
-            selector="#hc950", iframe=IFRAME, selector_strategy="css",
-        )
-        await asyncio.sleep(0.3)  # let the row append
-        after = await _read_lit_list_values(page)
-        if any(c.lower() == value.lower() for c in after):
-            return True
-        # The value didn't land correctly — remove any bogus entry it produced
-        # (present now, not before, and not the value we wanted).
-        bogus = [c for c in after if c.lower() not in before and c.lower() != value.lower()]
-        for b in bogus:
-            print(f"      ⚠ {value!r} inserted wrong as {b!r} — deleting it")
-            if await _select_lit_list_option(page, b):
-                await asyncio.sleep(0.2)
-                await runner.click(
-                    f"Delete truncated {b!r} (#hc952)",
-                    selector="#hc952", iframe=IFRAME, selector_strategy="css",
-                )
-                await asyncio.sleep(0.3)
-        return False
-
     # Reconcile: delete wrong values, add the missing ones (verified), and
     # repeat until #litList equals the Excel list or we run out of passes.
     MAX_PASSES = 5
@@ -1602,7 +1681,7 @@ async def sync_literal_list_values(
             break
         print(f"      🔁 litList pass {_pass}/{MAX_PASSES}: adding missing={missing}")
         for value in missing:
-            if not await _add_one(value):
+            if not await _add_lit_list_value(page, runner, value):
                 print(f"      ⚠ {value!r} did not insert correctly — retry next pass")
 
     final = await _read_lit_list_values(page)
@@ -1665,6 +1744,55 @@ async def verify_list_literal_committed(
     return False, (
         f"List of Values not equal after 3 attempts — "
         f"missing={sorted(want - cur)} extra={sorted(cur - want)}"
+    )
+
+
+async def verify_list_literal_appended(
+    page: Page, runner: StepRunner, right_operand_sel: str, row_number: str,
+    desired_raw: str, label: str,
+) -> tuple[bool, str]:
+    """Append-only counterpart of verify_list_literal_committed.
+
+    Reads the COMMITTED Right Operand list and checks that every Excel value
+    is in it. Values JDE already had are expected and fine (nothing is
+    overwritten). If some Excel values are missing, re-open the Literal editor
+    and append them again — up to 3 attempts total. Logs a success message
+    once all new values are confirmed. Returns (ok, error_message).
+    """
+    want = _tokenize_multi_value(desired_raw)
+    cur: set[str] = set()
+    for attempt in range(1, 4):
+        committed = await read_right_operand_selected_text(page, row_number)
+        cur = _tokenize_multi_value(_strip_edge_quotes(committed or ""))
+        missing = want - cur
+        if not missing:
+            print(
+                f"[{label}]   ↳ ✓ New values added successfully to the List of "
+                f"Values ({len(want)} Excel value(s) present; JDE list now has "
+                f"{len(cur)} value(s), existing values kept) "
+                f"(attempt {attempt}/3)"
+            )
+            return True, ""
+        print(
+            f"[{label}]   ↳ ⚠ Appended list incomplete (attempt {attempt}/3): "
+            f"missing={sorted(missing)}"
+        )
+        if attempt >= 3:
+            break
+        await runner.select(
+            "Right Operand dropdown (re-open Literal)", value="Literal",
+            selector=right_operand_sel, iframe=IFRAME, selector_strategy="css",
+        )
+        await asyncio.sleep(_LITERAL_TAB_SETTLE_S)
+        if not await click_literal_tab(page, runner, "List of Values"):
+            return False, "could not re-open the 'List of Values' tab to re-append"
+        await asyncio.sleep(_LITERAL_TAB_SETTLE_S)
+        await append_literal_list_values(page, runner, desired_raw)  # commits
+        await asyncio.sleep(_LITERAL_COMMIT_SETTLE_S)
+
+    return False, (
+        f"List of Values append incomplete after 3 attempts — "
+        f"missing={sorted(want - cur)}"
     )
 
 
@@ -1898,6 +2026,7 @@ def _expected_right_operand(sel: dict) -> str:
 
 async def verify_data_selection_result(
     page: Page, runner: StepRunner, data_selections: list[dict], label: str,
+    disable_overwrite: bool = False,
 ) -> list[str]:
     """After the Data Selection stage, re-read JDE's grid and compare it with
     the Excel fields (ignoring REMOVE). The final JDE list must equal the Excel
@@ -1905,6 +2034,10 @@ async def verify_data_selection_result(
 
     Each difference is recorded (record_failure) so it lands in the report and
     dashboard, and returned as a list of messages. Non-fatal — it only reports.
+
+    With *disable_overwrite*, an append-only field (Address Number - Ship To)
+    matches when JDE's list CONTAINS every Excel value — extra values JDE
+    already had are expected, since nothing is deleted in that mode.
     """
     # Expected list from Excel — REMOVE rows are gone from JDE, so drop them.
     expected = [s for s in data_selections if s.get("behavior") != "remove"]
@@ -1928,10 +2061,17 @@ async def verify_data_selection_result(
         want_right = _expected_right_operand(sel)
         is_multi = sel.get("left_operand", "").strip().lower() in MULTI_VALUE_LEFT_OPERANDS
         beh = sel.get("behavior", "literal")
+        append_only = use_append_only(
+            disable_overwrite, sel.get("left_operand", ""), beh,
+            str(sel.get("data_new", "")),
+        )
 
         def _right_ok(row_right: str) -> bool:
             if beh in _RIGHT_OPERAND_OPTION:
                 return _norm_ws(row_right).lower() == _norm_ws(want_right).lower()
+            if append_only:
+                return _tokenize_multi_value(want_right) <= _tokenize_multi_value(
+                    _strip_edge_quotes(row_right or ""))
             return right_operand_matches_excel(row_right, want_right, is_multi)
 
         # Prefer a full match (left + comparison + right); consume it.
@@ -2210,6 +2350,7 @@ async def add_data_selection_row(
     comparison_text: str,
     value: str,
     right_operand: str = "Literal",
+    append_only: bool = False,
 ) -> list[dict]:
     """Add a new Data Selection row for a Left Operand JDE doesn't have yet.
 
@@ -2289,7 +2430,7 @@ async def add_data_selection_row(
     await asyncio.sleep(_ADD_ROW_SETTLE_S)
     # "Zero" / "Null" / "DateToday [SL]" need no value — selecting is the edit.
     if right_operand == "Literal":
-        await write_literal_by_active_tab(page, runner, str(value))
+        await write_literal_by_active_tab(page, runner, str(value), append_only=append_only)
 
     # 4. Verify: the operand must now be in JDE's full Left Operand list.
     rows, _ = await list_left_operands(page, settle_ms=1000)
@@ -2338,6 +2479,9 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
     report = report_group["report"]
     data_selections = report_group.get("data_selections", []) or []
     processing_options = report_group.get("processing_options", []) or []
+    # Dashboard "Disable overwriting of values": for Address Number - Ship To,
+    # only ADD the Excel values to JDE's List of Values (no compare, no delete).
+    disable_overwrite = bool(report_group.get("disable_overwrite", False))
 
     # Reset the step counter so each iteration's logs start at S001
     StepRunner.reset_step_counter()
@@ -2512,6 +2656,18 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     # report columns don't shift it.
                     occurrence = int(sel.get("occurrence", 1) or 1)
 
+                    # "Disable overwriting of values" applies only to literal
+                    # lists of Address Number - Ship To; a single value or an
+                    # 'A - B' range uses Single Value / Range of Values as usual.
+                    append_only = use_append_only(
+                        disable_overwrite, left_operand, behavior, data_value,
+                    )
+                    if append_only:
+                        print(
+                            f"[{label}]   ↳ 'Disable overwriting of values' ON — "
+                            f"append-only List of Values (no compare, no delete)"
+                        )
+
                     # Find the matching RightOperand row by scanning all
                     # LeftOperand dropdowns for one whose option text contains
                     # the user's left_operand value. If nothing matches, the
@@ -2535,6 +2691,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                             lo_rows = await add_data_selection_row(
                                 page, runner, left_operand, comparison_value, data_value,
                                 right_operand=_RIGHT_OPERAND_OPTION.get(behavior, "Literal"),
+                                append_only=append_only,
                             )
                         except LeftOperandAddFailed as adderr:
                             # Couldn't add / verify the operand — record it and
@@ -2608,6 +2765,11 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         if behavior in _RIGHT_OPERAND_OPTION:
                             option_text = _RIGHT_OPERAND_OPTION[behavior]
                             right_ok = (current_right or "").strip().lower() == option_text.lower()
+                        elif append_only:
+                            # Already done only if every Excel value is in the
+                            # list; values JDE already has are left alone.
+                            right_ok = _tokenize_multi_value(data_value) <= _tokenize_multi_value(
+                                _strip_edge_quotes(current_right or ""))
                         else:  # literal
                             is_multi = left_operand.strip().lower() in MULTI_VALUE_LEFT_OPERANDS
                             right_ok = right_operand_matches_excel(current_right, data_value, is_multi)
@@ -2693,7 +2855,9 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         selector=right_operand_sel, iframe=IFRAME, selector_strategy="css"
                     )
                     try:
-                        await write_literal_by_active_tab(page, runner, str(data_value))
+                        await write_literal_by_active_tab(
+                            page, runner, str(data_value), append_only=append_only,
+                        )
                     except LiteralTypeMismatch as tmerr:
                         # The value's data type doesn't fit the active tab. Leave
                         # the field unchanged (the literal was never committed),
@@ -2727,19 +2891,28 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     # value equals the Excel list and re-open/re-sync (up to 3x)
                     # if not — large lists can silently drop values on commit.
                     # Done while the row is still unlocked (before re-lock).
-                    if row_number and _classify_literal_value(str(data_value))[0] == "list":
+                    # Append-only mode instead checks every Excel value is in the
+                    # committed list (existing JDE values are kept, not compared).
+                    if row_number and append_only:
+                        ok, verr = await verify_list_literal_appended(
+                            page, runner, right_operand_sel, row_number,
+                            str(data_value), label,
+                        )
+                    elif row_number and _classify_literal_value(str(data_value))[0] == "list":
                         ok, verr = await verify_list_literal_committed(
                             page, runner, right_operand_sel, row_number,
                             str(data_value), label,
                         )
-                        if not ok:
-                            msg = f"{left_operand}: {verr}"
-                            print(f"[{label}]   ↳ ✖ {msg}")
-                            runner.record_failure(f"Data Selection: {left_operand}", verr)
-                            field_errors.append(msg)
-                            await _diagnostic_screenshot(
-                                page, f"jde_ds_list_verify_{report.get('app_report', 'unknown')}_{idx}"
-                            )
+                    else:
+                        ok, verr = True, ""
+                    if not ok:
+                        msg = f"{left_operand}: {verr}"
+                        print(f"[{label}]   ↳ ✖ {msg}")
+                        runner.record_failure(f"Data Selection: {left_operand}", verr)
+                        field_errors.append(msg)
+                        await _diagnostic_screenshot(
+                            page, f"jde_ds_list_verify_{report.get('app_report', 'unknown')}_{idx}"
+                        )
 
                     # Restore the lock state — only for the edit branch.
                     # (REMOVE already `continue`d above.)
@@ -2752,7 +2925,8 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 # difference is recorded to the report — non-fatal.
                 try:
                     ds_diffs = await verify_data_selection_result(
-                        page, runner, data_selections, label
+                        page, runner, data_selections, label,
+                        disable_overwrite=disable_overwrite,
                     )
                     if ds_diffs:
                         field_errors.extend(ds_diffs)
