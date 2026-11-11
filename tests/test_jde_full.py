@@ -142,6 +142,13 @@ def resolve_comparison(raw: str) -> str:
     return COMPARISON_MAP.get(key, str(raw).strip())
 
 
+def comparison_is_blank(raw) -> bool:
+    """True when the Excel comparison (column B) is empty. A blank comparison
+    means "don't care": JDE's current comparison is kept as-is and is not
+    checked (only a brand-new row needs one, and gets 'is equal to')."""
+    return not str(raw or "").strip()
+
+
 def _comparison_key(s: str) -> str:
     """Core comparison text used for matching, tolerant of the leading 'is' and
     trailing 'to' the Excel file may omit:
@@ -2250,6 +2257,8 @@ async def verify_data_selection_result(
     diffs: list[str] = []
     for sel in expected:
         want_left = _clean_operand_for_match(sel.get("left_operand", ""))
+        # Blank column B → any JDE comparison is accepted.
+        any_comp = comparison_is_blank(sel.get("comparison", ""))
         want_comp = _comparison_key(resolve_comparison(sel.get("comparison", "")))
         want_right = _expected_right_operand(sel)
         is_multi = sel.get("left_operand", "").strip().lower() in MULTI_VALUE_LEFT_OPERANDS
@@ -2271,7 +2280,7 @@ async def verify_data_selection_result(
         full = next(
             (i for i, r in enumerate(remaining)
              if r["left_n"] == want_left
-             and (not r["comp_n"] or r["comp_n"] == want_comp)
+             and (any_comp or not r["comp_n"] or r["comp_n"] == want_comp)
              and _right_ok(r["right"])),
             None,
         )
@@ -2283,7 +2292,7 @@ async def verify_data_selection_result(
         # Prefer a row with the same comparison (duplicated Left Operands).
         partial = next(
             (i for i, r in enumerate(remaining)
-             if r["left_n"] == want_left and r["comp_n"] == want_comp),
+             if r["left_n"] == want_left and (any_comp or r["comp_n"] == want_comp)),
             None,
         )
         if partial is None:
@@ -2291,7 +2300,7 @@ async def verify_data_selection_result(
         if partial is not None:
             r = remaining.pop(partial)
             problems = []
-            if r["comp_n"] and r["comp_n"] != want_comp:
+            if not any_comp and r["comp_n"] and r["comp_n"] != want_comp:
                 problems.append(f"comparison expected {want_comp!r} but JDE has {r['comp_n']!r}")
             if not _right_ok(r["right"]):
                 problems.append(f"value expected {want_right!r} but JDE has {r['right']!r}")
@@ -2302,7 +2311,8 @@ async def verify_data_selection_result(
         else:
             diffs.append(
                 f"{sel.get('left_operand', '?')}: expected in JDE "
-                f"({want_comp} / {want_right!r}) but not found"
+                f"({'any comparison' if any_comp else want_comp} / {want_right!r}) "
+                f"but not found"
             )
 
     # Anything still in JDE that this Excel column didn't list was left blank
@@ -2613,7 +2623,10 @@ async def add_data_selection_row(
 
     # 2. Comparison — the operator equal to the Excel value (column B).
     resolved_comparison = resolve_comparison(comparison_text)
-    print(f"        Comparison: {comparison_text!r} → {resolved_comparison!r}")
+    if comparison_is_blank(comparison_text):
+        print(f"        Comparison: blank in Excel → new row defaults to {resolved_comparison!r}")
+    else:
+        print(f"        Comparison: {comparison_text!r} → {resolved_comparison!r}")
     if not await select_comparison_by_text(page, row_number, resolved_comparison):
         raise LeftOperandAddFailed(
             f"Could not select comparison {resolved_comparison!r} in "
@@ -2878,7 +2891,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     # operand isn't in JDE yet: "remove" has nothing to delete;
                     # otherwise add a brand-new row with the right combo option.
                     try:
-                        if sel.get("match_comparison"):
+                        if sel.get("match_comparison") and not comparison_is_blank(comparison_value):
                             # Duplicated Left Operand in the Excel → match on
                             # Left Operand + Comparison, so a value never lands
                             # on the duplicate whose cell is blank (untouched).
@@ -2976,8 +2989,12 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                         # Comparison match (tolerant of the 'is'/'to' the Excel
                         # file may omit).
                         current_comparison = await read_row_comparison(page, row_number)
-                        want_comparison = resolve_comparison(comparison_value)
-                        comp_ok = _comparison_key(current_comparison or "") == _comparison_key(want_comparison)
+                        if comparison_is_blank(comparison_value):
+                            # Blank column B → keep whatever JDE has.
+                            comp_ok = True
+                        else:
+                            want_comparison = resolve_comparison(comparison_value)
+                            comp_ok = _comparison_key(current_comparison or "") == _comparison_key(want_comparison)
 
                         if behavior in _RIGHT_OPERAND_OPTION:
                             option_text = _RIGHT_OPERAND_OPTION[behavior]
