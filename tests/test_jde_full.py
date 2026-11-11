@@ -54,6 +54,20 @@ _LITERAL_TAB_SETTLE_S = float(os.getenv("JDE_LITERAL_TAB_SETTLE_S", "0.8"))
 # or the next field's lock check) — otherwise the row isn't found yet.
 _LITERAL_COMMIT_SETTLE_S = float(os.getenv("JDE_LITERAL_COMMIT_SETTLE_S", "0.9"))
 
+# List of Values Add (#hc950) / Delete (#hc952): instead of a fixed sleep (plus
+# the runner's 400 ms pre-wait and up-to-5 s networkidle wait per click), poll
+# #litList until JDE has actually applied the change. TIMEOUT caps how long we
+# wait for JDE to respond; SETTLE is a short pause after the change shows up so
+# JDE's handlers finish before the next keystroke.
+_LIST_OP_TIMEOUT_S = float(os.getenv("JDE_LIST_OP_TIMEOUT_S", "5"))
+_LIST_OP_SETTLE_S = float(os.getenv("JDE_LIST_OP_SETTLE_S", "0.1"))
+_LIST_POLL_S = 0.05
+
+# Max wait for the Data Selection dialog / its grid to render (polled, so a
+# fast JDE response no longer pays the full wait).
+_DS_DIALOG_TIMEOUT_S = float(os.getenv("JDE_DS_DIALOG_TIMEOUT_S", "8"))
+_DS_GRID_TIMEOUT_S = float(os.getenv("JDE_DS_GRID_TIMEOUT_S", "5"))
+
 
 def _run_screenshot_path(name: str) -> str:
     """Resolve an error-screenshot path inside the current run's screenshots
@@ -211,36 +225,72 @@ _JS_LIST_LEFT_OPERANDS = """() => {
 
 
 async def verify_data_selection_dialog_open(
-    page: Page, attempts: int = 2, delay_s: float = 4.0,
+    page: Page, timeout_s: Optional[float] = None, poll_s: float = 0.25,
 ) -> bool:
     """Confirm the Data Selection dialog actually opened.
 
-    JDE can be slow to render the dialog after the option is clicked, so on
-    each of *attempts* tries we wait *delay_s* seconds and then look, across
-    every frame, for ``#jdeFormTitle`` whose title (or text) is
-    "Data Selection". Returns True as soon as it's found, False if all attempts
-    are exhausted.
+    JDE can be slow to render the dialog after the option is clicked, so we
+    poll every *poll_s* seconds — across every frame — for ``#jdeFormTitle``
+    whose title (or text) is "Data Selection", for up to *timeout_s* seconds
+    (default JDE_DS_DIALOG_TIMEOUT_S = 8 s, the same total as the old 2 × 4 s
+    fixed waits). Returns True as soon as it's found, False on timeout.
     """
     js = """() => {
         const el = document.querySelector('#jdeFormTitle');
         if (!el) return null;
         return (el.getAttribute('title') || el.textContent || '').trim();
     }"""
-    for attempt in range(1, attempts + 1):
-        await asyncio.sleep(delay_s)
+    timeout_s = _DS_DIALOG_TIMEOUT_S if timeout_s is None else timeout_s
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while True:
         for frame in page.frames:
             try:
                 title = await frame.evaluate(js)
             except Exception:
                 continue
             if title and title.strip().lower() == "data selection":
-                print(f"      ✓ Data Selection dialog confirmed (attempt {attempt})")
+                print(f"      ✓ Data Selection dialog confirmed "
+                      f"({loop.time() - start:.1f}s)")
                 return True
-        print(
-            f"      ⏳ Data Selection dialog not ready "
-            f"(attempt {attempt}/{attempts}, #jdeFormTitle title!='Data Selection')"
-        )
+        if loop.time() - start >= timeout_s:
+            break
+        await asyncio.sleep(poll_s)
+    print(
+        f"      ⏳ Data Selection dialog not ready after {timeout_s:.0f}s "
+        f"(#jdeFormTitle title!='Data Selection')"
+    )
     return False
+
+
+async def wait_for_ds_grid_stable(
+    page: Page, timeout_s: Optional[float] = None,
+    poll_s: float = 0.4, stable_reads: int = 3,
+) -> None:
+    """Wait until the Data Selection grid has rendered: poll the rows and
+    return once the same non-empty row list is read *stable_reads* times in a
+    row (≈0.8 s of no change), or after *timeout_s* (default 5 s — the old
+    fixed settle). Replaces the fixed 5 s wait when the dialog first opens."""
+    timeout_s = _DS_GRID_TIMEOUT_S if timeout_s is None else timeout_s
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    last = None
+    same = 0
+    while loop.time() - start < timeout_s:
+        rows = await enumerate_data_selection_rows(page)
+        sig = tuple((r.get("n"), r.get("left"), r.get("comparison"), r.get("right"))
+                    for r in rows)
+        if sig and sig == last:
+            same += 1
+            if same >= stable_reads - 1:
+                print(f"      ✓ DS grid stable ({len(rows)} row(s), "
+                      f"{loop.time() - start:.1f}s)")
+                return
+        else:
+            same = 0
+            last = sig
+        await asyncio.sleep(poll_s)
+    print(f"      ⏳ DS grid not confirmed stable after {timeout_s:.0f}s — continuing")
 
 
 async def list_left_operands(
@@ -1592,34 +1642,88 @@ async def write_literal_by_active_tab(
     await asyncio.sleep(_LITERAL_COMMIT_SETTLE_S)
 
 
-async def _add_lit_list_value(page: Page, runner: StepRunner, value: str) -> bool:
+async def _click_lit_button(
+    page: Page, runner: StepRunner, selector: str, description: str,
+) -> None:
+    """Click a List of Values button (#hc950 Add / #hc952 Delete) directly.
+
+    Skips the StepRunner's per-click 400 ms pre-wait and networkidle wait (up
+    to 5 s each) — the caller waits on #litList itself, which tracks JDE's
+    real response. Falls back to the regular runner click if the direct click
+    fails, so a slow/changed page still behaves exactly as before."""
+    try:
+        await page.frame_locator(IFRAME).locator(selector).first.click(timeout=10000)
+    except Exception as exc:
+        print(f"      ↳ direct click on {selector} failed ({exc}); using runner")
+        await runner.click(description, selector=selector, iframe=IFRAME,
+                           selector_strategy="css")
+
+
+async def _wait_lit_list(
+    page: Page, done, timeout_s: Optional[float] = None,
+) -> tuple[bool, list[str]]:
+    """Poll #litList until ``done(values)`` is true or *timeout_s* passes.
+    Returns (done, values). A short settle follows a detected change."""
+    timeout_s = _LIST_OP_TIMEOUT_S if timeout_s is None else timeout_s
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    cur = await _read_lit_list_values(page)
+    while not done(cur):
+        if loop.time() >= deadline:
+            return False, cur
+        await asyncio.sleep(_LIST_POLL_S)
+        cur = await _read_lit_list_values(page)
+    if _LIST_OP_SETTLE_S > 0:
+        await asyncio.sleep(_LIST_OP_SETTLE_S)
+    return True, cur
+
+
+async def _delete_lit_value(page: Page, runner: StepRunner, text: str) -> bool:
+    """Select *text* in #litList, click Delete (#hc952) and wait until it's
+    gone. Returns True if it left the list."""
+    if not await _select_lit_list_option(page, text):
+        return False
+    await asyncio.sleep(0.3)  # let the selection register (Delete reads it)
+    before = await _read_lit_list_values(page)
+    n_before = sum(1 for c in before if c.lower() == text.lower())
+    await _click_lit_button(page, runner, "#hc952", f"Delete literal {text!r} (#hc952)")
+    gone, _ = await _wait_lit_list(
+        page, lambda cur: sum(1 for c in cur if c.lower() == text.lower()) < n_before,
+    )
+    return gone
+
+
+async def _add_lit_list_value(
+    page: Page, runner: StepRunner, value: str,
+    before: Optional[list[str]] = None,
+) -> tuple[bool, list[str]]:
     """Fill + Add one value, then verify it actually landed. JDE can
     truncate a typed value ("BEK501"→"501"); if the exact value didn't
     appear, delete whatever bogus entry did and report failure so the outer
-    loop retries."""
-    before = {c.lower() for c in await _read_lit_list_values(page)}
+    loop retries.
+
+    *before* is the caller's current #litList (saves a re-read). Returns
+    (ok, list_after) so the caller can keep tracking the list without
+    reading it again."""
+    if before is None:
+        before = await _read_lit_list_values(page)
+    before_set = {c.lower() for c in before}
     await fill_jde_field(page, "#LITtfList", value)
-    await runner.click(
-        f"Add literal {value!r} (#hc950)",
-        selector="#hc950", iframe=IFRAME, selector_strategy="css",
+    await _click_lit_button(page, runner, "#hc950", f"Add literal {value!r} (#hc950)")
+    # Wait until JDE has appended something (the list changed).
+    _, after = await _wait_lit_list(
+        page,
+        lambda cur: len(cur) != len(before) or {c.lower() for c in cur} != before_set,
     )
-    await asyncio.sleep(0.3)  # let the row append
-    after = await _read_lit_list_values(page)
     if any(c.lower() == value.lower() for c in after):
-        return True
+        return True, after
     # The value didn't land correctly — remove any bogus entry it produced
     # (present now, not before, and not the value we wanted).
-    bogus = [c for c in after if c.lower() not in before and c.lower() != value.lower()]
+    bogus = [c for c in after if c.lower() not in before_set and c.lower() != value.lower()]
     for b in bogus:
         print(f"      ⚠ {value!r} inserted wrong as {b!r} — deleting it")
-        if await _select_lit_list_option(page, b):
-            await asyncio.sleep(0.2)
-            await runner.click(
-                f"Delete truncated {b!r} (#hc952)",
-                selector="#hc952", iframe=IFRAME, selector_strategy="css",
-            )
-            await asyncio.sleep(0.3)
-    return False
+        await _delete_lit_value(page, runner, b)
+    return False, await _read_lit_list_values(page)
 
 
 async def append_literal_list_values(
@@ -1640,13 +1744,14 @@ async def append_literal_list_values(
     print(f"      ➕ litList append-only (no overwrite): adding {desired}")
 
     failed: list[str] = []
+    current = await _read_lit_list_values(page)
     for value in desired:
-        current = {c.lower() for c in await _read_lit_list_values(page)}
-        if value.lower() in current:
+        if value.lower() in {c.lower() for c in current}:
             print(f"      ↳ {value!r} already in list — not added again")
             continue
         for attempt in range(1, 4):
-            if await _add_lit_list_value(page, runner, value):
+            ok, current = await _add_lit_list_value(page, runner, value, before=current)
+            if ok:
                 break
             print(f"      ⚠ {value!r} did not insert correctly (attempt {attempt}/3)")
         else:
@@ -1700,29 +1805,24 @@ async def sync_literal_list_values(
             if not extras:
                 return
             extra = extras[0]
-            if not await _select_lit_list_option(page, extra):
-                print(f"      ⚠ Could not select {extra!r} in #litList — skipping delete")
+            if not await _delete_lit_value(page, runner, extra):
+                print(f"      ⚠ Could not delete {extra!r} from #litList — skipping it")
                 stuck.add(extra.lower())
-                continue
-            await asyncio.sleep(0.3)  # let the selection register
-            await runner.click(
-                f"Delete literal {extra!r} (#hc952)",
-                selector="#hc952", iframe=IFRAME, selector_strategy="css",
-            )
-            await asyncio.sleep(0.4)  # let #litList re-render
 
     # Reconcile: delete wrong values, add the missing ones (verified), and
     # repeat until #litList equals the Excel list or we run out of passes.
     MAX_PASSES = 5
     for _pass in range(1, MAX_PASSES + 1):
         await _delete_extras()
-        current_norm = {c.lower() for c in await _read_lit_list_values(page)}
+        current = await _read_lit_list_values(page)
+        current_norm = {c.lower() for c in current}
         missing = [v for v in desired if v.lower() not in current_norm]
         if not missing:
             break
         print(f"      🔁 litList pass {_pass}/{MAX_PASSES}: adding missing={missing}")
         for value in missing:
-            if not await _add_lit_list_value(page, runner, value):
+            ok, current = await _add_lit_list_value(page, runner, value, before=current)
+            if not ok:
                 print(f"      ⚠ {value!r} did not insert correctly — retry next pass")
 
     final = await _read_lit_list_values(page)
@@ -2729,7 +2829,8 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                 # removed, after which lo_rows is refreshed). Reused for every field
                 # so duplicated Left Operands map their Nth entry to the Nth row.
                 print(f"[{label}] Enumerating Left Operand column (one-time)...")
-                lo_rows, _ = await list_left_operands(page, settle_ms=5000)
+                await wait_for_ds_grid_stable(page)
+                lo_rows, _ = await list_left_operands(page)
 
                 for idx, sel in enumerate(data_selections, 1):
                     left_operand = sel.get("left_operand", "")
