@@ -368,6 +368,25 @@ def _clean_operand_for_match(value: str) -> str:
     return _norm_ws(s).lower()
 
 
+def _left_operand_group(rows: list[dict], needle: str) -> list[dict]:
+    """All rows (document order) whose Left Operand ``value`` matches *needle*:
+    exact cleaned match preferred, else the shortest-containing group (so
+    "Business Unit" doesn't hijack "Business Unit - Header")."""
+    key = _clean_operand_for_match(needle)
+
+    def norm(r: dict) -> str:
+        return _clean_operand_for_match(r["value"])
+
+    group = [r for r in rows if norm(r) == key]
+    if not group and key:
+        subs = [r for r in rows if key in norm(r)]
+        if subs:
+            shortest_len = min(len(norm(r)) for r in subs)
+            keep = next(norm(r) for r in subs if len(norm(r)) == shortest_len)
+            group = [r for r in subs if norm(r) == keep]
+    return group
+
+
 def _match_left_operand_row(
     rows: list[dict], needle: str, occurrence: int,
 ) -> Optional[dict]:
@@ -382,19 +401,7 @@ def _match_left_operand_row(
     "Business Unit - Header"). Returns None if fewer than *occurrence* rows
     match.
     """
-    key = _clean_operand_for_match(needle)
-
-    def norm(r: dict) -> str:
-        return _clean_operand_for_match(r["value"])
-
-    exact = [r for r in rows if norm(r) == key]
-    group = exact
-    if not group and key:
-        subs = [r for r in rows if key in norm(r)]
-        if subs:
-            shortest_len = min(len(norm(r)) for r in subs)
-            keep = next(norm(r) for r in subs if len(norm(r)) == shortest_len)
-            group = [r for r in subs if norm(r) == keep]
+    group = _left_operand_group(rows, needle)
     if len(group) >= occurrence:
         return group[occurrence - 1]
     return None
@@ -403,6 +410,7 @@ def _match_left_operand_row(
 async def find_right_operand_selector(
     page: Page, left_operand_text: str, occurrence: int = 1,
     rows: Optional[list[dict]] = None,
+    comparison: Optional[str] = None,
 ) -> str:
     """Find the Data Selection row whose Left Operand matches *left_operand_text*
     and return its '#RightOperand{N}' selector.
@@ -415,6 +423,12 @@ async def find_right_operand_selector(
     *occurrence* (1-based) selects among duplicated Left Operands — the Nth
     matching row in document order.
 
+    *comparison* (for a Left Operand listed on several Excel rows): only rows
+    whose Comparison also matches are considered, and *occurrence* counts
+    among those. The grid is re-read fresh for this (comparisons can change
+    during the loop). No match → LookupError (the field is added as a new row,
+    or skipped for REMOVE) — a duplicate with another comparison is never used.
+
     Raises LookupError if nothing matches (which routes to the add-new-row
     path in the caller).
     """
@@ -424,8 +438,35 @@ async def find_right_operand_selector(
     needle = _norm_ws(left_operand_text).lower()
     print(
         f"  ↳ Searching for left operand: {left_operand_text!r} "
-        f"(needle={needle!r}, occurrence={occurrence})"
+        f"(needle={needle!r}, occurrence={occurrence}"
+        f"{f', comparison={comparison!r}' if comparison is not None else ''})"
     )
+
+    if comparison is not None:
+        ds_rows = await enumerate_data_selection_rows(page)
+        cand = [
+            {"n": r["n"], "value": r.get("left", ""), "locked": r.get("locked"),
+             "comparison": r.get("comparison", "")}
+            for r in ds_rows
+        ]
+        want = _comparison_key(resolve_comparison(comparison))
+        same = [
+            r for r in _left_operand_group(cand, needle)
+            if _comparison_key(r["comparison"]) == want
+        ]
+        if len(same) < occurrence:
+            raise LookupError(
+                f"No Left Operand matched '{left_operand_text}' with comparison "
+                f"{resolve_comparison(comparison)!r} (occurrence {occurrence}). "
+                f"Available: {[(r['value'], r['comparison']) for r in cand]}"
+            )
+        match = same[occurrence - 1]
+        selector = f"#RightOperand{match['n']}"
+        print(
+            f"  ↳ MATCH (left + comparison) #{occurrence}: row {match['n']} "
+            f"(value={match['value']!r}, comparison={match['comparison']!r}) → {selector}"
+        )
+        return selector
 
     if rows is None:
         # No cached enumeration — scan now (wait for the dialog to render).
@@ -1747,36 +1788,83 @@ async def verify_list_literal_committed(
     )
 
 
+def _committed_list_values(raw: Optional[str]) -> set[str]:
+    """Normalized value set of a committed Right Operand; a sentinel
+    ("Literal", "Blank", ...) or empty value means no list yet → empty set."""
+    v = _strip_edge_quotes(raw or "")
+    if not v or v.lower() in _RIGHT_OPERAND_SENTINELS:
+        return set()
+    return _tokenize_multi_value(v)
+
+
 async def verify_list_literal_appended(
     page: Page, runner: StepRunner, right_operand_sel: str, row_number: str,
-    desired_raw: str, label: str,
+    desired_raw: str, label: str, original_raw: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Append-only counterpart of verify_list_literal_committed.
 
-    Reads the COMMITTED Right Operand list and checks that every Excel value
-    is in it. Values JDE already had are expected and fine (nothing is
-    overwritten). If some Excel values are missing, re-open the Literal editor
-    and append them again — up to 3 attempts total. Logs a success message
-    once all new values are confirmed. Returns (ok, error_message).
+    *original_raw* is the JDE list saved BEFORE editing. After the append is
+    committed, the "sum" must hold:
+
+        original JDE list  +  new Excel values  =  committed JDE list
+
+    i.e. every original value is still there, every Excel value was added,
+    and nothing else appeared. Values that went missing (original or Excel)
+    are appended again — up to 3 attempts total. Nothing is ever deleted.
+    If *original_raw* is None (snapshot unavailable), only checks that every
+    Excel value is in the committed list. Returns (ok, error_message).
     """
-    want = _tokenize_multi_value(desired_raw)
+    excel = _tokenize_multi_value(desired_raw)
+    have_snapshot = original_raw is not None
+    original = _committed_list_values(original_raw) if have_snapshot else set()
+    new_vals = excel - original
+    expected = original | excel
+    if have_snapshot:
+        print(
+            f"[{label}]   ↳ Saved JDE list before edit: {len(original)} value(s); "
+            f"Excel adds {len(new_vals)} new value(s) "
+            f"({len(excel) - len(new_vals)} already present) → expect {len(expected)}"
+        )
+    # Original values first (JDE order), then the Excel ones — original casing.
+    reappend_raw = ";".join(
+        (_split_multi_values(_strip_edge_quotes(original_raw)) if original else [])
+        + _split_multi_values(desired_raw)
+    )
+
     cur: set[str] = set()
     for attempt in range(1, 4):
         committed = await read_right_operand_selected_text(page, row_number)
-        cur = _tokenize_multi_value(_strip_edge_quotes(committed or ""))
-        missing = want - cur
-        if not missing:
-            print(
-                f"[{label}]   ↳ ✓ New values added successfully to the List of "
-                f"Values ({len(want)} Excel value(s) present; JDE list now has "
-                f"{len(cur)} value(s), existing values kept) "
-                f"(attempt {attempt}/3)"
-            )
+        cur = _committed_list_values(committed)
+        missing = expected - cur
+        extra = (cur - expected) if have_snapshot else set()
+        if not missing and not extra:
+            if have_snapshot:
+                print(
+                    f"[{label}]   ↳ ✓ New values added successfully to the List of "
+                    f"Values: JDE list ({len(original)}) + new Excel values "
+                    f"({len(new_vals)}) = {len(cur)} value(s) now in JDE "
+                    f"(attempt {attempt}/3)"
+                )
+            else:
+                print(
+                    f"[{label}]   ↳ ✓ New values added successfully to the List of "
+                    f"Values ({len(excel)} Excel value(s) present; JDE list now has "
+                    f"{len(cur)} value(s)) — no pre-edit snapshot, sum not checked "
+                    f"(attempt {attempt}/3)"
+                )
             return True, ""
+        lost = sorted(missing & original)
+        not_added = sorted(missing - original)
         print(
-            f"[{label}]   ↳ ⚠ Appended list incomplete (attempt {attempt}/3): "
-            f"missing={sorted(missing)}"
+            f"[{label}]   ↳ ⚠ List sum mismatch (attempt {attempt}/3): "
+            f"expected {len(expected)}, JDE has {len(cur)}; "
+            f"Excel values not added={not_added} original values lost={lost} "
+            f"unexpected={sorted(extra)}"
         )
+        if not missing:
+            # Only unexpected extras — re-appending can't fix that and this
+            # mode never deletes. Report it.
+            break
         if attempt >= 3:
             break
         await runner.select(
@@ -1787,12 +1875,14 @@ async def verify_list_literal_appended(
         if not await click_literal_tab(page, runner, "List of Values"):
             return False, "could not re-open the 'List of Values' tab to re-append"
         await asyncio.sleep(_LITERAL_TAB_SETTLE_S)
-        await append_literal_list_values(page, runner, desired_raw)  # commits
+        await append_literal_list_values(page, runner, reappend_raw)  # commits
         await asyncio.sleep(_LITERAL_COMMIT_SETTLE_S)
 
     return False, (
-        f"List of Values append incomplete after 3 attempts — "
-        f"missing={sorted(want - cur)}"
+        f"List of Values append check failed: JDE list ({len(original)}) + new "
+        f"Excel values ({len(new_vals)}) should be {len(expected)}, JDE has "
+        f"{len(cur)} — missing={sorted(expected - cur)} "
+        f"unexpected={sorted(cur - expected) if have_snapshot else []}"
     )
 
 
@@ -2029,8 +2119,11 @@ async def verify_data_selection_result(
     disable_overwrite: bool = False,
 ) -> list[str]:
     """After the Data Selection stage, re-read JDE's grid and compare it with
-    the Excel fields (ignoring REMOVE). The final JDE list must equal the Excel
-    list on Left Operand, Comparison and Right Operand.
+    the Excel fields (ignoring REMOVE). Every Excel field with a value must be
+    in JDE with the same Left Operand, Comparison and Right Operand.
+
+    Fields left blank in this Excel column are never touched, so JDE rows the
+    Excel didn't list are expected and are NOT reported as differences.
 
     Each difference is recorded (record_failure) so it lands in the report and
     dashboard, and returned as a list of messages. Non-fatal — it only reports.
@@ -2087,7 +2180,14 @@ async def verify_data_selection_result(
             continue
 
         # Left present but comparison/right differs — report the specifics.
-        partial = next((i for i, r in enumerate(remaining) if r["left_n"] == want_left), None)
+        # Prefer a row with the same comparison (duplicated Left Operands).
+        partial = next(
+            (i for i, r in enumerate(remaining)
+             if r["left_n"] == want_left and r["comp_n"] == want_comp),
+            None,
+        )
+        if partial is None:
+            partial = next((i for i, r in enumerate(remaining) if r["left_n"] == want_left), None)
         if partial is not None:
             r = remaining.pop(partial)
             problems = []
@@ -2105,12 +2205,15 @@ async def verify_data_selection_result(
                 f"({want_comp} / {want_right!r}) but not found"
             )
 
-    # Anything still in JDE that Excel didn't list → unexpected extra rows.
-    for r in remaining:
-        diffs.append(
-            f"Unexpected JDE row not in Excel: {r['raw'].get('left', '')!r} "
-            f"{r['raw'].get('comparison', '')!r} {r['raw'].get('right', '')!r}"
-        )
+    # Anything still in JDE that this Excel column didn't list was left blank
+    # on purpose (= don't touch) — log it, but it is not a difference.
+    if remaining:
+        print(f"[{label}] ℹ {len(remaining)} JDE row(s) not in Excel (blank → left unchanged):")
+        for r in remaining:
+            print(
+                f"[{label}]     · {r['raw'].get('left', '')!r} "
+                f"{r['raw'].get('comparison', '')!r} {r['raw'].get('right', '')!r}"
+            )
 
     if diffs:
         print(f"[{label}] ⚠ DS verification found {len(diffs)} difference(s):")
@@ -2674,9 +2777,19 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     # operand isn't in JDE yet: "remove" has nothing to delete;
                     # otherwise add a brand-new row with the right combo option.
                     try:
-                        right_operand_sel = await find_right_operand_selector(
-                            page, left_operand, occurrence=occurrence, rows=lo_rows,
-                        )
+                        if sel.get("match_comparison"):
+                            # Duplicated Left Operand in the Excel → match on
+                            # Left Operand + Comparison, so a value never lands
+                            # on the duplicate whose cell is blank (untouched).
+                            right_operand_sel = await find_right_operand_selector(
+                                page, left_operand,
+                                occurrence=int(sel.get("comparison_occurrence", 1) or 1),
+                                comparison=comparison_value,
+                            )
+                        else:
+                            right_operand_sel = await find_right_operand_selector(
+                                page, left_operand, occurrence=occurrence, rows=lo_rows,
+                            )
                     except LookupError as exc:
                         if behavior == "remove":
                             print(
@@ -2750,6 +2863,9 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     # through. Locked rows have no #RightOperand{N} select, so
                     # their value is read from the column-4 StaticText instead.
                     comp_ok = True  # whether JDE's comparison already matches Excel
+                    # JDE's Right Operand BEFORE editing (the saved original
+                    # list for the append-only "sum" check). None = not read.
+                    current_right = None
                     if behavior != "remove" and row_number:
                         if row_is_locked:
                             current_right = await read_locked_right_operand_text(page, row_number)
@@ -2896,7 +3012,7 @@ async def run_jde_full(page: Page, report_group: dict[str, Any]) -> dict[str, An
                     if row_number and append_only:
                         ok, verr = await verify_list_literal_appended(
                             page, runner, right_operand_sel, row_number,
-                            str(data_value), label,
+                            str(data_value), label, original_raw=current_right,
                         )
                     elif row_number and _classify_literal_value(str(data_value))[0] == "list":
                         ok, verr = await verify_list_literal_committed(

@@ -130,6 +130,9 @@ def _clean_left_operand(raw: str) -> str:
     s = re.sub(r"^\s*(?:and|or)\b\s*", "", s, flags=re.IGNORECASE)
     # Drop the leading two-letter section code (e.g. "BC")
     s = re.sub(r"^\s*[A-Za-z]{2}\b\s*", "", s)
+    # Drop stray leading/trailing dashes left by typos like "Line Type -(F4211)"
+    # (inner dashes such as "Address Number - Ship To" are kept).
+    s = re.sub(r"^[\s\-–]+|[\s\-–]+$", "", s)
     # Collapse leftover whitespace
     return re.sub(r"\s+", " ", s).strip()
 
@@ -291,6 +294,17 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
         report_groups: list[dict] = []
         skipped: list[dict] = []
 
+        # Left Operands listed on more than one Excel row (e.g. two "Business
+        # Unit" rows, one "is not equal" and one "is equal to"). A value for one
+        # of them must go to the JDE row with the SAME comparison — matching by
+        # position alone would land on the wrong row whenever the other
+        # duplicate's cell is blank in this column (and blank = don't touch).
+        _lo_counts: dict[str, int] = {}
+        for r in ds_rows:
+            k = r["left_operand"].lower()
+            _lo_counts[k] = _lo_counts.get(k, 0) + 1
+        dup_lefts = {k for k, n in _lo_counts.items() if n > 1}
+
         # Excel columns are 1-indexed; column C = index 2 in a zero-based list
         for col_idx0 in range(JDE_FIRST_REPORT_COL - 1, max_len):
             col_letter = _col_letter(col_idx0 + 1)
@@ -344,13 +358,20 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
             # globally would let a row left blank in THIS column still consume
             # an ordinal, so a lone value would look for a non-existent Nth row.
             col_occurrence: dict[str, int] = {}
+            # Same, but per (Left Operand, Comparison) — used for duplicated
+            # Left Operands, which are matched on comparison too.
+            comp_occurrence: dict[tuple[str, str], int] = {}
             for r in ds_rows:
                 val = _cell(r["row"], col_idx0)
+                # Blank cell → this field is NOT touched in JDE for this
+                # version (it isn't emitted at all).
                 if val is None or not str(val).strip():
                     continue
                 data_new = str(val).strip()
                 lo_key = r["left_operand"].lower()
                 col_occurrence[lo_key] = col_occurrence.get(lo_key, 0) + 1
+                ck = (lo_key, " ".join(str(r["comparison"]).lower().split()))
+                comp_occurrence[ck] = comp_occurrence.get(ck, 0) + 1
 
                 # Classify the edit behavior (remove / zero / null / literal).
                 # The literal data type is verified at execution time from
@@ -361,6 +382,10 @@ def parse_jde_excel_export(file_path: str, sheet_name: str) -> tuple[list[dict],
                     "data_new": data_new,
                     "behavior": classify_ds_behavior(data_new),
                     "occurrence": col_occurrence[lo_key],
+                    # Duplicated Left Operand → match the JDE row by Left
+                    # Operand + Comparison (Nth such row = comparison_occurrence).
+                    "match_comparison": lo_key in dup_lefts,
+                    "comparison_occurrence": comp_occurrence[ck],
                     "_source_row": r["row_index"],
                 })
 
